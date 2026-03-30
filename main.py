@@ -14,6 +14,7 @@ dp = Dispatcher()
 # --- ЗАГРУЗКА СЛОВ ИЗ JSON ---
 words_file = "words.json"
 if not os.path.exists(words_file):
+    # Если файла нет, создаем минимальный пример
     sample_words = [
         {"he": "לעשות", "tr": "лаасот", "ru": "делать"},
         {"he": "לאכול", "tr": "леэхоль", "ru": "есть"},
@@ -29,20 +30,12 @@ with open(words_file, "r", encoding="utf-8") as f:
 # --- ДАННЫЕ ПОЛЬЗОВАТЕЛЕЙ ---
 user_data = {}       # Текущий правильный ответ
 user_stats = {}      # Статистика {user_id: {"correct": 0, "wrong": 0}}
-user_repeat = {}     # Слова, которые нужно повторить, {"user_id": [word, ...]}
 
 # --- ГЕНЕРАЦИЯ ВОПРОСА ---
-def generate_question(user_id=None):
-    pool = words.copy()
-
-    # Если есть слова для повторения, добавляем их несколько раз
-    if user_id and user_repeat.get(user_id):
-        pool.extend(user_repeat[user_id] * 5)
-
-    word = random.choice(pool)
+def generate_question():
+    word = random.choice(words)
     correct = word["ru"]
-
-    # Формируем варианты ответа
+    # Все остальные переводы
     all_translations = [w["ru"] for w in words if w["ru"] != correct]
     choices = random.sample(all_translations, min(3, len(all_translations)))
     choices.append(correct)
@@ -51,33 +44,34 @@ def generate_question(user_id=None):
 
 # --- КНОПКИ ---
 def build_keyboard(choices, include_reset=False):
-    buttons = [InlineKeyboardButton(text=c, callback_data=c) for c in choices]
+    # Растягиваем кнопки с помощью EM SPACE (\u2003)
+    def pad_text(text, length=20):
+        if len(text) >= length:
+            return text
+        return text + "\u2003" * (length - len(text))
+
+    buttons = [InlineKeyboardButton(text=pad_text(c), callback_data=c) for c in choices]
 
     # Разбиваем на строки по 2 кнопки
     keyboard_rows = []
     for i in range(0, len(buttons), 2):
         keyboard_rows.append(buttons[i:i+2])
 
-    # Кнопка "Сбросить"
+    # Кнопка "Сбросить" тоже растягиваем
     if include_reset:
-        keyboard_rows.append([InlineKeyboardButton(text="🔄 Сбросить статистику", callback_data="reset")])
+        reset_btn = InlineKeyboardButton(text=pad_text("🔄 Сбросить статистику"), callback_data="reset")
+        keyboard_rows.append([reset_btn])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 # --- СТАТИСТИКА ---
-def update_stats(user_id, is_correct, word=None):
+def update_stats(user_id, is_correct):
     if user_id not in user_stats:
         user_stats[user_id] = {"correct": 0, "wrong": 0}
     if is_correct:
         user_stats[user_id]["correct"] += 1
-        # Если слово было в повторении, убираем его
-        if word and user_repeat.get(user_id) and word in user_repeat[user_id]:
-            user_repeat[user_id].remove(word)
     else:
         user_stats[user_id]["wrong"] += 1
-        # Добавляем слово в повторение
-        if word:
-            user_repeat.setdefault(user_id, []).append(word)
 
 def get_stats(user_id):
     if user_id not in user_stats:
@@ -86,14 +80,12 @@ def get_stats(user_id):
 
 def reset_stats(user_id):
     user_stats[user_id] = {"correct": 0, "wrong": 0}
-    user_repeat[user_id] = []
 
 # --- СТАРТ ---
 @dp.message(Command(commands=["start", "restart"]))
 async def start(message: types.Message):
-    user_id = message.from_user.id
-    word, choices, correct = generate_question(user_id)
-    user_data[user_id] = correct
+    word, choices, correct = generate_question()
+    user_data[message.from_user.id] = correct
     text = f"{word['he']} — {word['tr']}\nВыберите правильный перевод:"
     await message.answer(text, reply_markup=build_keyboard(choices, include_reset=True))
 
@@ -106,30 +98,41 @@ async def answer(call: types.CallbackQuery):
     if call.data == "reset":
         reset_stats(user_id)
         await call.message.edit_text("📊 Статистика обнулена!")
-        # следующий вопрос
-        word, choices, correct = generate_question(user_id)
+        # задаем новый вопрос
+        word, choices, correct = generate_question()
         user_data[user_id] = correct
-        await call.message.answer(f"{word['he']} — {word['tr']}", reply_markup=build_keyboard(choices, include_reset=True))
+        await call.message.answer(
+            f"{word['he']} — {word['tr']}",
+            reply_markup=build_keyboard(choices, include_reset=True)
+        )
         return
 
     # --- Проверка ответа ---
-    correct = user_data.get(user_id)
-    word_obj = next(w for w in words if w["ru"] == correct)
-
-    if call.data == correct:
-        update_stats(user_id, True, word_obj)
-        result_text = f"✅ Верно!\n{word_obj['he']} — {word_obj['tr']} = {word_obj['ru']}"
+    correct_answer = user_data.get(user_id)
+    if call.data == correct_answer:
+        update_stats(user_id, True)
+        result_text = f"✅ Верно! {call.message.text.splitlines()[0]} — {correct_answer}"
     else:
-        update_stats(user_id, False, word_obj)
-        result_text = f"❌ Неверно!\n{word_obj['he']} — {word_obj['tr']} = {word_obj['ru']}"
+        update_stats(user_id, False)
+        # Показываем слово на иврите и правильный перевод
+        word_he_tr = next((w for w in words if w["ru"] == correct_answer), None)
+        if word_he_tr:
+            result_text = f"❌ Неверно! {word_he_tr['he']} — {correct_answer}"
+        else:
+            result_text = f"❌ Неверно! Правильный ответ: {correct_answer}"
 
     correct_count, wrong_count = get_stats(user_id)
-    await call.message.edit_text(f"{result_text}\n\n📊 Статистика:\n✅ {correct_count} | ❌ {wrong_count}")
+    await call.message.edit_text(
+        f"{result_text}\n\n📊 Статистика:\n✅ {correct_count} | ❌ {wrong_count}"
+    )
 
     # --- Следующий вопрос ---
-    word, choices, correct = generate_question(user_id)
+    word, choices, correct = generate_question()
     user_data[user_id] = correct
-    await call.message.answer(f"{word['he']} — {word['tr']}", reply_markup=build_keyboard(choices, include_reset=True))
+    await call.message.answer(
+        f"{word['he']} — {word['tr']}",
+        reply_markup=build_keyboard(choices, include_reset=True)
+    )
 
 # --- ЗАПУСК ---
 async def main():
