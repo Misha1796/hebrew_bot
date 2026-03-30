@@ -1,117 +1,108 @@
 import asyncio
-import json
-import os
 import random
-import sqlite3
-
+import os
+import json
 from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
 
-# --- ТОКЕН И БОТ ---
+# --- ТОКЕН ---
 TOKEN = os.getenv("TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- БАЗА ДАННЫХ ---
-conn = sqlite3.connect("words.db")
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS stats (
-    user_id INTEGER PRIMARY KEY,
-    correct INTEGER DEFAULT 0,
-    wrong INTEGER DEFAULT 0
-)
-""")
-conn.commit()
-
 # --- ЗАГРУЗКА СЛОВ ИЗ JSON ---
-with open("words.json", "r", encoding="utf-8") as f:
+words_file = "words.json"
+if not os.path.exists(words_file):
+    # Если файла нет, создаем минимальный пример
+    sample_words = [
+        {"he": "לעשות", "tr": "лаасот", "ru": "делать"},
+        {"he": "לאכול", "tr": "леэхоль", "ru": "есть"},
+        {"he": "לשתות", "tr": "лиштот", "ru": "пить"},
+        {"he": "לישון", "tr": "лишон", "ru": "спать"}
+    ]
+    with open(words_file, "w", encoding="utf-8") as f:
+        json.dump(sample_words, f, ensure_ascii=False, indent=4)
+
+with open(words_file, "r", encoding="utf-8") as f:
     words = json.load(f)
 
-user_data = {}
+# --- ДАННЫЕ ПОЛЬЗОВАТЕЛЕЙ ---
+user_data = {}       # Текущий правильный ответ
+user_stats = {}      # Статистика {user_id: {"correct": 0, "wrong": 0}}
 
 # --- ГЕНЕРАЦИЯ ВОПРОСА ---
 def generate_question():
     word = random.choice(words)
     correct = word["ru"]
+    # Все остальные переводы
     all_translations = [w["ru"] for w in words if w["ru"] != correct]
     choices = random.sample(all_translations, min(3, len(all_translations)))
     choices.append(correct)
     random.shuffle(choices)
     return word, choices, correct
 
-# --- БОЛЬШИЕ КНОПКИ (2x2 + Сброс) ---
-def build_keyboard(choices):
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add(
-        types.KeyboardButton(choices[0]),
-        types.KeyboardButton(choices[1])
-    )
-    keyboard.add(
-        types.KeyboardButton(choices[2]),
-        types.KeyboardButton(choices[3])
-    )
-    keyboard.add(types.KeyboardButton("🔄 Сбросить статистику"))
-    return keyboard
+# --- КНОПКИ ---
+def build_keyboard(choices, include_reset=False):
+    buttons = [InlineKeyboardButton(text=c, callback_data=c) for c in choices]
+    
+    # Разбиваем на строки по 2 кнопки
+    keyboard_rows = []
+    for i in range(0, len(buttons), 2):
+        keyboard_rows.append(buttons[i:i+2])
+    
+    # Добавляем кнопку "Сбросить" в отдельную строку
+    if include_reset:
+        keyboard_rows.append([InlineKeyboardButton(text="🔄 Сбросить статистику", callback_data="reset")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 # --- СТАТИСТИКА ---
 def update_stats(user_id, is_correct):
-    cursor.execute("SELECT correct, wrong FROM stats WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    if row is None:
-        cursor.execute(
-            "INSERT INTO stats (user_id, correct, wrong) VALUES (?, ?, ?)",
-            (user_id, 1 if is_correct else 0, 0 if is_correct else 1)
-        )
+    if user_id not in user_stats:
+        user_stats[user_id] = {"correct": 0, "wrong": 0}
+    if is_correct:
+        user_stats[user_id]["correct"] += 1
     else:
-        if is_correct:
-            cursor.execute("UPDATE stats SET correct = correct + 1 WHERE user_id=?", (user_id,))
-        else:
-            cursor.execute("UPDATE stats SET wrong = wrong + 1 WHERE user_id=?", (user_id,))
-    conn.commit()
+        user_stats[user_id]["wrong"] += 1
 
 def get_stats(user_id):
-    cursor.execute("SELECT correct, wrong FROM stats WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    return row if row else (0, 0)
+    if user_id not in user_stats:
+        user_stats[user_id] = {"correct": 0, "wrong": 0}
+    return user_stats[user_id]["correct"], user_stats[user_id]["wrong"]
 
 def reset_stats(user_id):
-    cursor.execute("DELETE FROM stats WHERE user_id=?", (user_id,))
-    conn.commit()
+    user_stats[user_id] = {"correct": 0, "wrong": 0}
 
-# --- СТАРТ / РЕСТАРТ ---
+# --- СТАРТ ---
 @dp.message(Command(commands=["start", "restart"]))
 async def start(message: types.Message):
     word, choices, correct = generate_question()
     user_data[message.from_user.id] = correct
-    text = f"{word['he']} — {word['tr']}\nВыберите перевод:"
-    await message.answer(text, reply_markup=build_keyboard(choices))
+    text = f"{word['he']} — {word['tr']}\nВыберите правильный перевод:"
+    await message.answer(text, reply_markup=build_keyboard(choices, include_reset=True))
 
-# --- ОБРАБОТКА ОТВЕТОВ ---
-@dp.message()
-async def handle_answer(message: types.Message):
-    user_id = message.from_user.id
-    text = message.text
+# --- ОТВЕТ ---
+@dp.callback_query()
+async def answer(call: types.CallbackQuery):
+    user_id = call.from_user.id
 
-    if text == "🔄 Сбросить статистику":
+    # --- Сброс статистики ---
+    if call.data == "reset":
         reset_stats(user_id)
-        await message.answer("♻️ Статистика обнулена!", reply_markup=types.ReplyKeyboardRemove())
-        # сразу задаём новый вопрос
+        await call.message.edit_text("📊 Статистика обнулена!")
+        # задаем новый вопрос
         word, choices, correct = generate_question()
         user_data[user_id] = correct
-        await message.answer(f"{word['he']} — {word['tr']}\nВыберите перевод:", reply_markup=build_keyboard(choices))
+        await call.message.answer(
+            f"{word['he']} — {word['tr']}",
+            reply_markup=build_keyboard(choices, include_reset=True)
+        )
         return
 
+    # --- Проверка ответа ---
     correct = user_data.get(user_id)
-    if correct is None:
-        # Если нет текущего вопроса
-        word, choices, correct = generate_question()
-        user_data[user_id] = correct
-        await message.answer(f"{word['he']} — {word['tr']}\nВыберите перевод:", reply_markup=build_keyboard(choices))
-        return
-
-    if text == correct:
+    if call.data == correct:
         update_stats(user_id, True)
         result_text = f"✅ Верно! {correct}"
     else:
@@ -119,14 +110,17 @@ async def handle_answer(message: types.Message):
         result_text = f"❌ Неверно! Правильный ответ: {correct}"
 
     correct_count, wrong_count = get_stats(user_id)
-    await message.answer(
+    await call.message.edit_text(
         f"{result_text}\n\n📊 Статистика:\n✅ {correct_count} | ❌ {wrong_count}"
     )
 
-    # Новый вопрос
+    # --- Следующий вопрос ---
     word, choices, correct = generate_question()
     user_data[user_id] = correct
-    await message.answer(f"{word['he']} — {word['tr']}\nВыберите перевод:", reply_markup=build_keyboard(choices))
+    await call.message.answer(
+        f"{word['he']} — {word['tr']}",
+        reply_markup=build_keyboard(choices, include_reset=True)
+    )
 
 # --- ЗАПУСК ---
 async def main():
