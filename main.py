@@ -2,40 +2,40 @@ import asyncio
 import random
 import os
 import json
-import sqlite3
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
 
-# --- Токен ---
+# --- ТОКЕН ---
 TOKEN = os.getenv("TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- БАЗА ДАННЫХ ---
-conn = sqlite3.connect("words.db")
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS stats (
-    user_id INTEGER PRIMARY KEY,
-    correct INTEGER DEFAULT 0,
-    wrong INTEGER DEFAULT 0
-)
-""")
-conn.commit()
-
 # --- ЗАГРУЗКА СЛОВ ИЗ JSON ---
-with open("words.json", "r", encoding="utf-8") as f:
+words_file = "words.json"
+if not os.path.exists(words_file):
+    # Если файла нет, создаем минимальный пример
+    sample_words = [
+        {"he": "לעשות", "tr": "лаасот", "ru": "делать"},
+        {"he": "לאכול", "tr": "леэхоль", "ru": "есть"},
+        {"he": "לשתות", "tr": "лиштот", "ru": "пить"},
+        {"he": "לישון", "tr": "лишон", "ru": "спать"}
+    ]
+    with open(words_file, "w", encoding="utf-8") as f:
+        json.dump(sample_words, f, ensure_ascii=False, indent=4)
+
+with open(words_file, "r", encoding="utf-8") as f:
     words = json.load(f)
 
-user_data = {}
+# --- ДАННЫЕ ПОЛЬЗОВАТЕЛЕЙ ---
+user_data = {}       # Текущий правильный ответ
+user_stats = {}      # Статистика {user_id: {"correct": 0, "wrong": 0}}
 
 # --- ГЕНЕРАЦИЯ ВОПРОСА ---
 def generate_question():
     word = random.choice(words)
     correct = word["ru"]
-    # создаём варианты ответов
+    # Все остальные переводы
     all_translations = [w["ru"] for w in words if w["ru"] != correct]
     choices = random.sample(all_translations, min(3, len(all_translations)))
     choices.append(correct)
@@ -43,60 +43,64 @@ def generate_question():
     return word, choices, correct
 
 # --- КНОПКИ ---
-def build_keyboard(choices):
+def build_keyboard(choices, include_reset=False):
     buttons = [InlineKeyboardButton(text=c, callback_data=c) for c in choices]
-    return InlineKeyboardMarkup(
-        inline_keyboard=[buttons[i:i+2] for i in range(0, len(buttons), 2)]
-    )
+    
+    # Разбиваем на строки по 2 кнопки
+    keyboard_rows = []
+    for i in range(0, len(buttons), 2):
+        keyboard_rows.append(buttons[i:i+2])
+    
+    # Добавляем кнопку "Сбросить" в отдельную строку
+    if include_reset:
+        keyboard_rows.append([InlineKeyboardButton(text="🔄 Сбросить статистику", callback_data="reset")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 # --- СТАТИСТИКА ---
 def update_stats(user_id, is_correct):
-    cursor.execute("SELECT correct, wrong FROM stats WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    if row is None:
-        if is_correct:
-            cursor.execute("INSERT INTO stats (user_id, correct, wrong) VALUES (?, 1, 0)", (user_id,))
-        else:
-            cursor.execute("INSERT INTO stats (user_id, correct, wrong) VALUES (?, 0, 1)", (user_id,))
+    if user_id not in user_stats:
+        user_stats[user_id] = {"correct": 0, "wrong": 0}
+    if is_correct:
+        user_stats[user_id]["correct"] += 1
     else:
-        if is_correct:
-            cursor.execute("UPDATE stats SET correct = correct + 1 WHERE user_id=?", (user_id,))
-        else:
-            cursor.execute("UPDATE stats SET wrong = wrong + 1 WHERE user_id=?", (user_id,))
-    conn.commit()
+        user_stats[user_id]["wrong"] += 1
 
 def get_stats(user_id):
-    cursor.execute("SELECT correct, wrong FROM stats WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    return row if row else (0, 0)
+    if user_id not in user_stats:
+        user_stats[user_id] = {"correct": 0, "wrong": 0}
+    return user_stats[user_id]["correct"], user_stats[user_id]["wrong"]
 
-def reset_stats_db(user_id):
-    cursor.execute("DELETE FROM stats WHERE user_id=?", (user_id,))
-    conn.commit()
+def reset_stats(user_id):
+    user_stats[user_id] = {"correct": 0, "wrong": 0}
 
 # --- СТАРТ ---
 @dp.message(Command(commands=["start", "restart"]))
 async def start(message: types.Message):
     word, choices, correct = generate_question()
     user_data[message.from_user.id] = correct
-    text = f"{word['he']} — {word['tr']}\nВыберите перевод:"
-    # добавим кнопку "Сбросить статистику"
-    reset_button = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Сбросить статистику", callback_data="reset")]
-    ])
-    await message.answer(text, reply_markup=build_keyboard(choices))
-    await message.answer("📌 Также вы можете сбросить статистику:", reply_markup=reset_button)
+    text = f"{word['he']} — {word['tr']}\nВыберите правильный перевод:"
+    await message.answer(text, reply_markup=build_keyboard(choices, include_reset=True))
 
-# --- ОТВЕТЫ НА ВАРИАНТЫ ---
+# --- ОТВЕТ ---
 @dp.callback_query()
 async def answer(call: types.CallbackQuery):
     user_id = call.from_user.id
 
+    # --- Сброс статистики ---
     if call.data == "reset":
-        reset_stats_db(user_id)
-        await call.message.answer("📊 Статистика сброшена!")
+        reset_stats(user_id)
+        await call.message.edit_text("📊 Статистика обнулена!")
+        # задаем новый вопрос
+        word, choices, correct = generate_question()
+        user_data[user_id] = correct
+        await call.message.answer(
+            f"{word['he']} — {word['tr']}",
+            reply_markup=build_keyboard(choices, include_reset=True)
+        )
         return
 
+    # --- Проверка ответа ---
     correct = user_data.get(user_id)
     if call.data == correct:
         update_stats(user_id, True)
@@ -110,12 +114,12 @@ async def answer(call: types.CallbackQuery):
         f"{result_text}\n\n📊 Статистика:\n✅ {correct_count} | ❌ {wrong_count}"
     )
 
-    # следующий вопрос
+    # --- Следующий вопрос ---
     word, choices, correct = generate_question()
     user_data[user_id] = correct
     await call.message.answer(
         f"{word['he']} — {word['tr']}",
-        reply_markup=build_keyboard(choices)
+        reply_markup=build_keyboard(choices, include_reset=True)
     )
 
 # --- ЗАПУСК ---
