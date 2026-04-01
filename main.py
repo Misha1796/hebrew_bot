@@ -6,11 +6,11 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 TOKEN = os.getenv("TOKEN")
 bot = Bot(token=TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher()  # здесь не передаем bot!
 
 # --- Главное меню ---
 def main_menu() -> InlineKeyboardMarkup:
-    keyboard = InlineKeyboardMarkup(
+    return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="1️⃣ Тренажёр слов", callback_data="mode_trainer"),
@@ -26,16 +26,14 @@ def main_menu() -> InlineKeyboardMarkup:
             ]
         ]
     )
-    return keyboard
 
 # --- Кнопка возврата ---
 def back_to_menu() -> InlineKeyboardMarkup:
-    keyboard = InlineKeyboardMarkup(
+    return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")]
         ]
     )
-    return keyboard
 
 # --- Старт ---
 @dp.message(Command(commands=["start"]))
@@ -51,7 +49,6 @@ async def callback_handler(call: types.CallbackQuery):
         await call.message.edit_text("📚 Главное меню", reply_markup=main_menu())
         return
 
-    # Режимы
     modes = {
         "mode_trainer": "📝 Режим: Тренажёр слов",
         "mode_future": "🔮 Режим: Будущее время",
