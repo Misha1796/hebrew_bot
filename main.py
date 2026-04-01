@@ -1,12 +1,24 @@
 import asyncio
+import json
 import os
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+# --- Токен ---
 TOKEN = os.getenv("TOKEN")
 bot = Bot(token=TOKEN)
-dp = Dispatcher()  # здесь не передаем bot!
+dp = Dispatcher()  # В aiogram 3.x бот не передаётся в Dispatcher
+
+# --- Загрузка слов из файла ---
+WORDS_FILE = "words.json"
+
+try:
+    with open(WORDS_FILE, "r", encoding="utf-8") as f:
+        words_data = json.load(f)
+except FileNotFoundError:
+    print(f"Файл {WORDS_FILE} не найден!")
+    words_data = {}
 
 # --- Главное меню ---
 def main_menu() -> InlineKeyboardMarkup:
@@ -49,6 +61,7 @@ async def callback_handler(call: types.CallbackQuery):
         await call.message.edit_text("📚 Главное меню", reply_markup=main_menu())
         return
 
+    # Названия режимов
     modes = {
         "mode_trainer": "📝 Режим: Тренажёр слов",
         "mode_future": "🔮 Режим: Будущее время",
@@ -58,8 +71,33 @@ async def callback_handler(call: types.CallbackQuery):
         "mode_materials": "📚 Учебные материалы"
     }
 
-    if data in modes:
-        await call.message.edit_text(modes[data], reply_markup=back_to_menu())
+    text = modes.get(data, "Неизвестный режим")
+
+    # Подгружаем слова для режимов
+    if data == "mode_trainer":
+        sample_words = words_data.get("trainer", [])
+    elif data == "mode_future":
+        sample_words = words_data.get("future", [])
+    elif data == "mode_past":
+        sample_words = words_data.get("past", [])
+    elif data == "mode_adjectives":
+        sample_words = words_data.get("adjectives", [])
+    elif data == "mode_prepositions":
+        sample_words = words_data.get("prepositions", [])
+    elif data == "mode_materials":
+        sample_words = words_data.get("materials", [])
+    else:
+        sample_words = []
+
+    if sample_words:
+        # Выводим первые 5 слов для примера
+        text += "\n\n"
+        for w in sample_words[:5]:
+            text += f"{w.get('he', '')} - {w.get('tr', '')} - {w.get('ru', '')}\n"
+    else:
+        text += "\n\nСлова не найдены!"
+
+    await call.message.edit_text(text, reply_markup=back_to_menu())
 
 # --- Запуск ---
 async def main():
