@@ -1,107 +1,152 @@
 import asyncio
 import json
 import os
+import random
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.filters import Command
 
-# --- Токен ---
 TOKEN = os.getenv("TOKEN")
 bot = Bot(token=TOKEN)
-dp = Dispatcher()  # В aiogram 3.x бот не передаётся в Dispatcher
+dp = Dispatcher()
 
-# --- Загрузка слов из файла ---
-WORDS_FILE = "words.json"
+# --- ЗАГРУЗКА СЛОВ ---
+with open("words.json", "r", encoding="utf-8") as f:
+    data = json.load(f)
 
-try:
-    with open(WORDS_FILE, "r", encoding="utf-8") as f:
-        words_data = json.load(f)
-except FileNotFoundError:
-    print(f"Файл {WORDS_FILE} не найден!")
-    words_data = {}
+# --- ДАННЫЕ ПОЛЬЗОВАТЕЛЕЙ ---
+user_data = {}   # Текущий правильный ответ
+user_stats = {}  # {user_id: {"correct": 0, "wrong": 0}}
+error_queue = {} # {user_id: [слова для повторов]}
 
-# --- Главное меню ---
-def main_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="1️⃣ Тренажёр слов", callback_data="mode_trainer"),
-                InlineKeyboardButton(text="🔮 Будущее время", callback_data="mode_future")
-            ],
-            [
-                InlineKeyboardButton(text="⏳ Прошедшее время", callback_data="mode_past"),
-                InlineKeyboardButton(text="🖌 Прилагательные", callback_data="mode_adjectives")
-            ],
-            [
-                InlineKeyboardButton(text="🔗 Союзы / предлоги", callback_data="mode_prepositions"),
-                InlineKeyboardButton(text="📚 Учебные материалы", callback_data="mode_materials")
-            ]
-        ]
-    )
+# --- КЛАВИАТУРА ---
+def build_keyboard(choices, include_reset=False):
+    buttons = []
+    # добавляем невидимые пробелы, чтобы кнопки были крупнее
+    for c in choices:
+        display = f"{c}⠀⠀"  # два невидимых символа U+2800
+        buttons.append(InlineKeyboardButton(display, callback_data=c))
 
-# --- Кнопка возврата ---
-def back_to_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")]
-        ]
-    )
+    # две кнопки в ряд
+    keyboard_rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
 
-# --- Старт ---
-@dp.message(Command(commands=["start"]))
+    # кнопка сброса статистики
+    if include_reset:
+        keyboard_rows.append([InlineKeyboardButton("🔄 Сбросить статистику", callback_data="reset")])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+# --- СТАТИСТИКА ---
+def update_stats(user_id, is_correct):
+    if user_id not in user_stats:
+        user_stats[user_id] = {"correct": 0, "wrong": 0}
+    if is_correct:
+        user_stats[user_id]["correct"] += 1
+    else:
+        user_stats[user_id]["wrong"] += 1
+
+def get_stats(user_id):
+    if user_id not in user_stats:
+        user_stats[user_id] = {"correct": 0, "wrong": 0}
+    return user_stats[user_id]["correct"], user_stats[user_id]["wrong"]
+
+def reset_stats(user_id):
+    user_stats[user_id] = {"correct": 0, "wrong": 0}
+    error_queue[user_id] = []
+
+# --- ГЕНЕРАЦИЯ ВОПРОСА ---
+def generate_question(user_id, mode):
+    # Сначала проверяем ошибки
+    if user_id in error_queue and error_queue[user_id]:
+        item = error_queue[user_id].pop(0)
+    else:
+        item = random.choice(data[mode])
+
+    correct = item["ru"]
+    
+    # Генерация вариантов
+    other_choices = [w["ru"] for w in data[mode] if w["ru"] != correct]
+    n_choices = min(3, len(other_choices))
+    choices = random.sample(other_choices, n_choices) + [correct]
+    random.shuffle(choices)
+
+    return item, choices, correct
+
+# --- МЕНЮ ---
+def main_menu():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton("1️⃣ Тренажёр слов", callback_data="mode_trainer")],
+        [InlineKeyboardButton("2️⃣ Будущее время", callback_data="mode_future")],
+        [InlineKeyboardButton("3️⃣ Прошедшее время", callback_data="mode_past")],
+        [InlineKeyboardButton("4️⃣ Прилагательные", callback_data="mode_adjectives")],
+        [InlineKeyboardButton("5️⃣ Связующие слова", callback_data="mode_connectors")]
+    ])
+    return keyboard
+
+# --- СТАРТ ---
+@dp.message(Command(commands=["start", "restart"]))
 async def start(message: types.Message):
     await message.answer("📚 Главное меню", reply_markup=main_menu())
 
-# --- Обработка кнопок ---
+# --- ВЫБОР РЕЖИМА ---
 @dp.callback_query()
-async def callback_handler(call: types.CallbackQuery):
-    data = call.data
-
-    if data == "back_main":
-        await call.message.edit_text("📚 Главное меню", reply_markup=main_menu())
-        return
-
-    # Названия режимов
-    modes = {
-        "mode_trainer": "📝 Режим: Тренажёр слов",
-        "mode_future": "🔮 Режим: Будущее время",
-        "mode_past": "⏳ Режим: Прошедшее время",
-        "mode_adjectives": "🖌 Режим: Прилагательные",
-        "mode_prepositions": "🔗 Режим: Союзы / предлоги",
-        "mode_materials": "📚 Учебные материалы"
+async def set_mode(call: types.CallbackQuery):
+    user_id = call.from_user.id
+    mode_map = {
+        "mode_trainer": "trainer",
+        "mode_future": "future",
+        "mode_past": "past",
+        "mode_adjectives": "adjectives",
+        "mode_connectors": "connectors"
     }
 
-    text = modes.get(data, "Неизвестный режим")
+    if call.data in mode_map:
+        mode = mode_map[call.data]
+        item, choices, correct = generate_question(user_id, mode)
+        user_data[user_id] = {"correct": correct, "mode": mode}
 
-    # Подгружаем слова для режимов
-    if data == "mode_trainer":
-        sample_words = words_data.get("trainer", [])
-    elif data == "mode_future":
-        sample_words = words_data.get("future", [])
-    elif data == "mode_past":
-        sample_words = words_data.get("past", [])
-    elif data == "mode_adjectives":
-        sample_words = words_data.get("adjectives", [])
-    elif data == "mode_prepositions":
-        sample_words = words_data.get("prepositions", [])
-    elif data == "mode_materials":
-        sample_words = words_data.get("materials", [])
+        # Текст вопроса
+        if mode == "trainer":
+            text = f"{item['he']} — {item['tr']}\nВыберите правильный перевод:"
+        else:
+            # показываем транскрипцию только в кнопках
+            text = f"{item['he']} — Выберите правильный вариант:"
+
+        await call.message.edit_text(text, reply_markup=build_keyboard(choices, include_reset=True))
+
+    # Сброс статистики
+    elif call.data == "reset":
+        reset_stats(user_id)
+        await call.message.edit_text("📊 Статистика обнулена!")
+        await call.message.answer("📚 Главное меню", reply_markup=main_menu())
+
+    # Проверка ответа
     else:
-        sample_words = []
+        correct = user_data[user_id]["correct"]
+        mode = user_data[user_id]["mode"]
+        if call.data == correct:
+            update_stats(user_id, True)
+            result_text = f"✅ Верно! {user_data[user_id]['correct']}"
+        else:
+            update_stats(user_id, False)
+            result_text = f"❌ Неверно! Правильный ответ: {user_data[user_id]['correct']}"
+            # добавляем слово в очередь повторов 5 раз
+            error_queue.setdefault(user_id, []).extend([{"he": item["he"], "tr": item.get("tr", ""), "ru": correct}] * 5)
 
-    if sample_words:
-        # Выводим первые 5 слов для примера
-        text += "\n\n"
-        for w in sample_words[:5]:
-            text += f"{w.get('he', '')} - {w.get('tr', '')} - {w.get('ru', '')}\n"
-    else:
-        text += "\n\nСлова не найдены!"
+        correct_count, wrong_count = get_stats(user_id)
+        await call.message.edit_text(f"{result_text}\n\n📊 Статистика:\n✅ {correct_count} | ❌ {wrong_count}")
 
-    await call.message.edit_text(text, reply_markup=back_to_menu())
+        # Следующий вопрос
+        item, choices, correct = generate_question(user_id, mode)
+        user_data[user_id] = {"correct": correct, "mode": mode}
+        if mode == "trainer":
+            text = f"{item['he']} — {item['tr']}\nВыберите правильный перевод:"
+        else:
+            text = f"{item['he']} — Выберите правильный вариант:"
+        await call.message.answer(text, reply_markup=build_keyboard(choices, include_reset=True))
 
-# --- Запуск ---
+# --- ЗАПУСК ---
 async def main():
-    print("Бот запущен...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
