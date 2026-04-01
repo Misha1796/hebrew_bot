@@ -6,31 +6,39 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 TOKEN = os.getenv("TOKEN")
 bot = Bot(token=TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(bot)
 
 # --- Главное меню ---
-def main_menu():
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("1️⃣ Тренажёр слов", callback_data="mode_trainer"),
-        InlineKeyboardButton("🔮 Будущее время", callback_data="mode_future"),
-        InlineKeyboardButton("⏳ Прошедшее время", callback_data="mode_past"),
-        InlineKeyboardButton("🖌 Прилагательные", callback_data="mode_adjectives"),
-        InlineKeyboardButton("🔗 Союзы / предлоги", callback_data="mode_prepositions"),
-        InlineKeyboardButton("📚 Учебные материалы", callback_data="mode_materials")
+def main_menu() -> InlineKeyboardMarkup:
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="1️⃣ Тренажёр слов", callback_data="mode_trainer"),
+                InlineKeyboardButton(text="🔮 Будущее время", callback_data="mode_future")
+            ],
+            [
+                InlineKeyboardButton(text="⏳ Прошедшее время", callback_data="mode_past"),
+                InlineKeyboardButton(text="🖌 Прилагательные", callback_data="mode_adjectives")
+            ],
+            [
+                InlineKeyboardButton(text="🔗 Союзы / предлоги", callback_data="mode_prepositions"),
+                InlineKeyboardButton(text="📚 Учебные материалы", callback_data="mode_materials")
+            ]
+        ]
     )
     return keyboard
 
 # --- Кнопка возврата ---
-def back_to_menu():
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(
-        InlineKeyboardButton("🏠 Главное меню", callback_data="back_main")
+def back_to_menu() -> InlineKeyboardMarkup:
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")]
+        ]
     )
     return keyboard
 
 # --- Старт ---
-@dp.message(Command("start"))
+@dp.message(Command(commands=["start"]))
 async def start(message: types.Message):
     await message.answer("📚 Главное меню", reply_markup=main_menu())
 
@@ -58,6 +66,7 @@ async def callback_handler(call: types.CallbackQuery):
 
 # --- Запуск ---
 async def main():
+    print("Бот запущен...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
