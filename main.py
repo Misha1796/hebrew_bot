@@ -24,6 +24,8 @@ def load_json(filename):
 words_data = load_json(words_file)
 theory_data = load_json(theory_file)
 
+# user_states теперь хранит список уже показанных слов
+# {user_id: {"mode": str, "current_item": dict, "learned": [список_ru_значений]}}
 user_states = {} 
 user_stats = {}
 
@@ -46,28 +48,34 @@ def get_quiz_kb(choices):
     buttons.append([InlineKeyboardButton(text="🔙 В главное меню", callback_data="to_main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# --- ЛОГИКА ТЕОРИИ ---
-
-def get_theory_kb():
-    # Создаем кнопки на основе ключей из theory.json
-    buttons = [[InlineKeyboardButton(text=topic.capitalize(), callback_data=f"th_{topic}")] 
-               for topic in theory_data.keys()]
-    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="to_main")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
 # --- ЛОГИКА ВОПРОСОВ ---
 
 async def send_question(message, user_id, mode, feedback=""):
-    if user_id not in user_states:
-        user_states[user_id] = {"mode": mode, "current_item": {}, "wrong_words": []}
+    if user_id not in user_states or user_states[user_id].get("mode") != mode:
+        user_states[user_id] = {"mode": mode, "current_item": {}, "learned": []}
     
     state = user_states[user_id]
-    item = state["wrong_words"].pop(0) if state["wrong_words"] else random.choice(words_data[mode])
+    all_words = words_data[mode]
     
+    # Фильтруем слова, которые еще не были отвечены правильно
+    available_words = [w for w in all_words if w["ru"] not in state["learned"]]
+    
+    if not available_words:
+        # Если все слова выучены
+        text = f"{feedback}\n\n🎉 **Поздравляю!** Вы прошли все слова в этом режиме.\nНажмите «Сброс», чтобы начать заново."
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Сбросить и начать круг", callback_data="stats_reset")],
+            [InlineKeyboardButton(text="🏠 В меню", callback_data="to_main")]
+        ])
+        await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    # Выбираем случайное слово из доступных
+    item = random.choice(available_words)
     state["current_item"] = item
-    correct = item["ru"]
     
-    all_variants = [w["ru"] for w in words_data[mode]]
+    correct = item["ru"]
+    all_variants = [w["ru"] for w in all_words]
     choices = list(set([correct] + random.sample(all_variants, min(len(all_variants), 4))))
     random.shuffle(choices)
     
@@ -75,7 +83,7 @@ async def send_question(message, user_id, mode, feedback=""):
     transcription = f" — *{item['tr']}*" if "tr" in item else ""
     
     text = f"{feedback}\n" if feedback else ""
-    text += f"📈 {stats['correct']} | 📉 {stats['wrong']}\n"
+    text += f"📈 {stats['correct']} | Осталось: {len(available_words)}\n"
     text += "────────────────────\n"
     text += f"Как переводится?\n\n"
     text += f"🇮🇱 **{item['he']}**{transcription}"
@@ -95,24 +103,26 @@ async def cmd_start(message: types.Message):
 async def go_to_main(call: types.CallbackQuery):
     await call.message.edit_text("🏠 **Главное меню**", reply_markup=get_main_menu(), parse_mode="Markdown")
 
-# --- ОБРАБОТКА ТЕОРИИ ---
 @dp.callback_query(F.data == "theory_main")
 async def theory_menu(call: types.CallbackQuery):
-    await call.message.edit_text("📚 **Выберите тему теории:**", reply_markup=get_theory_kb(), parse_mode="Markdown")
+    if not theory_data:
+        await call.answer("Файл теории пуст или не найден")
+        return
+    buttons = [[InlineKeyboardButton(text=t.capitalize(), callback_data=f"th_{t}")] for t in theory_data.keys()]
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="to_main")])
+    await call.message.edit_text("📚 **Выберите тему:**", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("th_"))
 async def show_theory_topic(call: types.CallbackQuery):
     topic = call.data.replace("th_", "")
-    text = f"📘 **{topic.capitalize()}**\n\n{theory_data.get(topic, 'Информация скоро появится...')}"
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 К списку тем", callback_data="theory_main")]])
+    text = f"📘 **{topic.capitalize()}**\n\n{theory_data.get(topic, '...')}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[[InlineKeyboardButton(text="🔙 Назад", callback_data="theory_main")]]])
     await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
-# --- ОБРАБОТКА КВИЗА ---
 @dp.callback_query(F.data.startswith("mode_"))
 async def select_mode(call: types.CallbackQuery):
     mode = call.data.split("_")[1]
-    user_states[call.from_user.id] = {"mode": mode, "current_item": {}, "wrong_words": []}
+    user_states[call.from_user.id] = {"mode": mode, "current_item": {}, "learned": []}
     await send_question(call.message, call.from_user.id, mode)
 
 @dp.callback_query(F.data.startswith("ans_"))
@@ -127,10 +137,12 @@ async def handle_answer(call: types.CallbackQuery):
 
     if ans == correct_item["ru"]:
         user_stats[user_id]["correct"] += 1
-        feedback = "✅ **Браво!**"
+        # Добавляем в список выученных, чтобы больше не показывать в этом круге
+        state["learned"].append(correct_item["ru"])
+        feedback = "✅ **Верно!**"
     else:
         user_stats[user_id]["wrong"] += 1
-        for _ in range(3): state["wrong_words"].append(correct_item)
+        # Слово НЕ добавляется в learned, значит оно выпадет снова когда-то потом
         tr = f"({correct_item['tr']})" if "tr" in correct_item else ""
         feedback = f"❌ **Ошибка!**\nВерно: `{correct_item['ru']}` {tr}"
 
@@ -146,8 +158,12 @@ async def show_stats(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "stats_reset")
 async def reset_stats(call: types.CallbackQuery):
-    user_stats[call.from_user.id] = {"correct": 0, "wrong": 0}
-    await call.answer("Сброшено")
+    user_id = call.from_user.id
+    user_stats[user_id] = {"correct": 0, "wrong": 0}
+    if user_id in user_states:
+        user_states[user_id]["learned"] = []
+    await call.answer("Прогресс обнулен")
+    # После сброса возвращаемся в меню или запускаем режим заново
     await go_to_main(call)
 
 async def main():
