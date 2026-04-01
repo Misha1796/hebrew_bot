@@ -9,18 +9,20 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 # --- НАСТРОЙКИ ---
 TOKEN = os.getenv("TOKEN")
 words_file = "words.json"
+theory_file = "theory.json"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # --- ЗАГРУЗКА ДАННЫХ ---
-def load_words():
-    if os.path.exists(words_file):
-        with open(words_file, "r", encoding="utf-8") as f:
+def load_json(filename):
+    if os.path.exists(filename):
+        with open(filename, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
-words_data = load_words()
+words_data = load_json(words_file)
+theory_data = load_json(theory_file)
 
 user_states = {} 
 user_stats = {}
@@ -34,14 +36,23 @@ def get_main_menu():
         [InlineKeyboardButton(text="📜 Прошедшее время", callback_data="mode_past")],
         [InlineKeyboardButton(text="🎨 Прилагательные", callback_data="mode_adjectives")],
         [InlineKeyboardButton(text="🔗 Связующие слова", callback_data="mode_connectors")],
-        [InlineKeyboardButton(text="📊 Моя статистика", callback_data="stats_main")]
+        [InlineKeyboardButton(text="📚 Теория", callback_data="theory_main")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats_main")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_quiz_kb(choices):
-    # Каждая кнопка на всю ширину
     buttons = [[InlineKeyboardButton(text=c, callback_data=f"ans_{c}")] for c in choices]
     buttons.append([InlineKeyboardButton(text="🔙 В главное меню", callback_data="to_main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# --- ЛОГИКА ТЕОРИИ ---
+
+def get_theory_kb():
+    # Создаем кнопки на основе ключей из theory.json
+    buttons = [[InlineKeyboardButton(text=topic.capitalize(), callback_data=f"th_{topic}")] 
+               for topic in theory_data.keys()]
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="to_main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # --- ЛОГИКА ВОПРОСОВ ---
@@ -51,39 +62,24 @@ async def send_question(message, user_id, mode, feedback=""):
         user_states[user_id] = {"mode": mode, "current_item": {}, "wrong_words": []}
     
     state = user_states[user_id]
-    
-    # Умный повтор
-    if state["wrong_words"]:
-        item = state["wrong_words"].pop(0)
-    else:
-        item = random.choice(words_data[mode])
+    item = state["wrong_words"].pop(0) if state["wrong_words"] else random.choice(words_data[mode])
     
     state["current_item"] = item
     correct = item["ru"]
     
-    # Варианты ответов
     all_variants = [w["ru"] for w in words_data[mode]]
     choices = list(set([correct] + random.sample(all_variants, min(len(all_variants), 4))))
     random.shuffle(choices)
     
-    # Статистика для отображения в тексте
     stats = user_stats.get(user_id, {"correct": 0, "wrong": 0})
-    header_stats = f"📈 {stats['correct']} | 📉 {stats['wrong']}"
+    transcription = f" — *{item['tr']}*" if "tr" in item else ""
     
-    # Формирование текста
-    transcription = f"*{item['tr']}*" if "tr" in item else ""
+    text = f"{feedback}\n" if feedback else ""
+    text += f"📈 {stats['correct']} | 📉 {stats['wrong']}\n"
+    text += "────────────────────\n"
+    text += f"Как переводится?\n\n"
+    text += f"🇮🇱 **{item['he']}**{transcription}"
     
-    # Красивое оформление сообщения
-    text = ""
-    if feedback:
-        text += f"{feedback}\n"
-        text += "────────────────────\n"
-    
-    text += f"{header_stats}\n\n"
-    text += f"Как переводится слово?\n"
-    text += f"💎 **{item['he']}** {transcription}"
-    
-    # Используем edit_text, если это ответ на вопрос, или answer, если это начало
     try:
         await message.edit_text(text, reply_markup=get_quiz_kb(choices), parse_mode="Markdown")
     except:
@@ -93,78 +89,65 @@ async def send_question(message, user_id, mode, feedback=""):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    welcome_text = (
-        "✨ **Добро пожаловать в Иврит-Бот!** ✨\n\n"
-        "Выбери режим обучения ниже, чтобы начать тренировку."
-    )
-    await message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode="Markdown")
+    await message.answer("🇮🇱 **Шалом!** Выбери раздел:", reply_markup=get_main_menu(), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "to_main")
 async def go_to_main(call: types.CallbackQuery):
-    await call.message.edit_text("🏠 **Главное меню**\nВыбери режим обучения:", 
-                               reply_markup=get_main_menu(), parse_mode="Markdown")
+    await call.message.edit_text("🏠 **Главное меню**", reply_markup=get_main_menu(), parse_mode="Markdown")
 
+# --- ОБРАБОТКА ТЕОРИИ ---
+@dp.callback_query(F.data == "theory_main")
+async def theory_menu(call: types.CallbackQuery):
+    await call.message.edit_text("📚 **Выберите тему теории:**", reply_markup=get_theory_kb(), parse_mode="Markdown")
+
+@dp.callback_query(F.data.startswith("th_"))
+async def show_theory_topic(call: types.CallbackQuery):
+    topic = call.data.replace("th_", "")
+    text = f"📘 **{topic.capitalize()}**\n\n{theory_data.get(topic, 'Информация скоро появится...')}"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 К списку тем", callback_data="theory_main")]])
+    await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+# --- ОБРАБОТКА КВИЗА ---
 @dp.callback_query(F.data.startswith("mode_"))
 async def select_mode(call: types.CallbackQuery):
     mode = call.data.split("_")[1]
-    user_id = call.from_user.id
-    user_states[user_id] = {"mode": mode, "current_item": {}, "wrong_words": []}
-    await send_question(call.message, user_id, mode)
+    user_states[call.from_user.id] = {"mode": mode, "current_item": {}, "wrong_words": []}
+    await send_question(call.message, call.from_user.id, mode)
 
 @dp.callback_query(F.data.startswith("ans_"))
 async def handle_answer(call: types.CallbackQuery):
     user_id = call.from_user.id
     ans = call.data.replace("ans_", "")
     state = user_states.get(user_id)
-    
-    if not state: 
-        await go_to_main(call)
-        return
+    if not state: return
 
     correct_item = state["current_item"]
-    if user_id not in user_stats:
-        user_stats[user_id] = {"correct": 0, "wrong": 0}
+    if user_id not in user_stats: user_stats[user_id] = {"correct": 0, "wrong": 0}
 
-    # Формируем фидбек вместо всплывающего окна
     if ans == correct_item["ru"]:
         user_stats[user_id]["correct"] += 1
-        feedback = "✅ **Верно!**"
+        feedback = "✅ **Браво!**"
     else:
         user_stats[user_id]["wrong"] += 1
-        for _ in range(3):
-            state["wrong_words"].append(correct_item)
-        tr_info = f"({correct_item['tr']})" if "tr" in correct_item else ""
-        feedback = f"❌ **Ошибка!**\nПравильно: `{correct_item['ru']}` {tr_info}"
+        for _ in range(3): state["wrong_words"].append(correct_item)
+        tr = f"({correct_item['tr']})" if "tr" in correct_item else ""
+        feedback = f"❌ **Ошибка!**\nВерно: `{correct_item['ru']}` {tr}"
 
-    # Сразу отправляем следующий вопрос, передавая фидбек
     await send_question(call.message, user_id, state["mode"], feedback=feedback)
-    await call.answer() # Просто подтверждаем клик, без текста
+    await call.answer()
 
 @dp.callback_query(F.data == "stats_main")
 async def show_stats(call: types.CallbackQuery):
     stats = user_stats.get(call.from_user.id, {"correct": 0, "wrong": 0})
-    text = (
-        "📊 **Твоя личная статистика**\n"
-        "────────────────────\n"
-        f"✅ Правильных ответов: `{stats['correct']}`\n"
-        f"❌ Допущено ошибок: `{stats['wrong']}`\n"
-        "────────────────────\n"
-        "Продолжай в том же духе!"
-    )
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑 Сбросить прогресс", callback_data="stats_reset")],
-        [InlineKeyboardButton(text="🏠 В меню", callback_data="to_main")]
-    ])
+    text = f"📊 **Статистика**\n\n✅ Верно: `{stats['correct']}`\n❌ Ошибок: `{stats['wrong']}`"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗑 Сброс", callback_data="stats_reset")], [InlineKeyboardButton(text="🏠 Меню", callback_data="to_main")]])
     await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data == "stats_reset")
 async def reset_stats(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    user_stats[user_id] = {"correct": 0, "wrong": 0}
-    if user_id in user_states:
-        user_states[user_id]["wrong_words"] = []
-    await call.answer("Прогресс обнулен")
+    user_stats[call.from_user.id] = {"correct": 0, "wrong": 0}
+    await call.answer("Сброшено")
     await go_to_main(call)
 
 async def main():
