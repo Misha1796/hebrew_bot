@@ -1,8 +1,8 @@
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.filters import Command
 import asyncio
 import os
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 TOKEN = os.getenv("TOKEN")
 bot = Bot(token=TOKEN)
@@ -21,7 +21,7 @@ def main_menu():
     )
     return keyboard
 
-# --- Кнопка возврата в меню ---
+# --- Кнопка возврата ---
 def back_to_menu():
     keyboard = InlineKeyboardMarkup()
     keyboard.add(
@@ -34,27 +34,27 @@ def back_to_menu():
 async def start(message: types.Message):
     await message.answer("📚 Главное меню", reply_markup=main_menu())
 
-# --- Обработка кнопок главного меню ---
+# --- Обработка кнопок ---
 @dp.callback_query()
-async def menu_handler(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    if call.data == "back_main":
+async def callback_handler(call: types.CallbackQuery):
+    data = call.data
+
+    if data == "back_main":
         await call.message.edit_text("📚 Главное меню", reply_markup=main_menu())
         return
 
-    # Примеры режимов
-    if call.data == "mode_trainer":
-        await call.message.edit_text("📝 Режим: Тренажёр слов", reply_markup=back_to_menu())
-    elif call.data == "mode_future":
-        await call.message.edit_text("🔮 Режим: Будущее время", reply_markup=back_to_menu())
-    elif call.data == "mode_past":
-        await call.message.edit_text("⏳ Режим: Прошедшее время", reply_markup=back_to_menu())
-    elif call.data == "mode_adjectives":
-        await call.message.edit_text("🖌 Режим: Прилагательные", reply_markup=back_to_menu())
-    elif call.data == "mode_prepositions":
-        await call.message.edit_text("🔗 Режим: Союзы / предлоги", reply_markup=back_to_menu())
-    elif call.data == "mode_materials":
-        await call.message.edit_text("📚 Учебные материалы", reply_markup=back_to_menu())
+    # Режимы
+    modes = {
+        "mode_trainer": "📝 Режим: Тренажёр слов",
+        "mode_future": "🔮 Режим: Будущее время",
+        "mode_past": "⏳ Режим: Прошедшее время",
+        "mode_adjectives": "🖌 Режим: Прилагательные",
+        "mode_prepositions": "🔗 Режим: Союзы / предлоги",
+        "mode_materials": "📚 Учебные материалы"
+    }
+
+    if data in modes:
+        await call.message.edit_text(modes[data], reply_markup=back_to_menu())
 
 # --- Запуск ---
 async def main():
