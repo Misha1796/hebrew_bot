@@ -6,133 +6,168 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
 
-# --- ТОКЕН ---
 TOKEN = os.getenv("TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- ЗАГРУЗКА СЛОВ ИЗ JSON ---
-words_file = "words.json"
-if not os.path.exists(words_file):
-    # Если файла нет, создаем минимальный пример
-    sample_words = [
-        {"he": "לעשות", "tr": "лаасот", "ru": "делать"},
-        {"he": "לאכול", "tr": "леэхоль", "ru": "есть"},
-        {"he": "לשתות", "tr": "лиштот", "ru": "пить"},
-        {"he": "לישון", "tr": "лишон", "ru": "спать"}
+# --- ЗАГРУЗКА ---
+with open("words.json", "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+# --- ДАННЫЕ ---
+user_mode = {}
+user_data = {}
+user_stats = {}
+user_repeat = {}
+
+# --- МЕНЮ ---
+def main_menu():
+    buttons = [
+        [InlineKeyboardButton(text="📘 Тренажёр", callback_data="mode_trainer")],
+        [InlineKeyboardButton(text="🔮 Будущее", callback_data="mode_future")],
+        [InlineKeyboardButton(text="⏳ Прошедшее", callback_data="mode_past")],
+        [InlineKeyboardButton(text="🧩 Прилагательные", callback_data="mode_adjectives")],
+        [InlineKeyboardButton(text="🔗 Связки", callback_data="mode_connectors")],
+        [InlineKeyboardButton(text="📚 Обучение", callback_data="learning")]
     ]
-    with open(words_file, "w", encoding="utf-8") as f:
-        json.dump(sample_words, f, ensure_ascii=False, indent=4)
-
-with open(words_file, "r", encoding="utf-8") as f:
-    words = json.load(f)
-
-# --- ДАННЫЕ ПОЛЬЗОВАТЕЛЕЙ ---
-user_data = {}       # Текущий правильный ответ
-user_stats = {}      # Статистика {user_id: {"correct": 0, "wrong": 0}}
-
-# --- ГЕНЕРАЦИЯ ВОПРОСА ---
-def generate_question():
-    word = random.choice(words)
-    correct = word["ru"]
-    # Все остальные переводы
-    all_translations = [w["ru"] for w in words if w["ru"] != correct]
-    choices = random.sample(all_translations, min(3, len(all_translations)))
-    choices.append(correct)
-    random.shuffle(choices)
-    return word, choices, correct
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # --- КНОПКИ ---
-def build_keyboard(choices, include_reset=False):
-    # Растягиваем кнопки с помощью EM SPACE (\u2003)
-    def pad_text(text, length=20):
-        if len(text) >= length:
-            return text
-        return text + "\u2003" * (length - len(text))
+def build_keyboard(choices, include_back=True):
+    def pad(text, l=25):
+        return text + "\u2003" * max(0, l - len(text))
 
-    buttons = [InlineKeyboardButton(text=pad_text(c), callback_data=c) for c in choices]
+    buttons = []
+    for c in choices:
+        if isinstance(c, dict):
+            text = f"{c['he']} — {c['tr']}"
+            callback = c["he"]
+        else:
+            text = c
+            callback = c
 
-    # Разбиваем на строки по 2 кнопки
-    keyboard_rows = []
-    for i in range(0, len(buttons), 2):
-        keyboard_rows.append(buttons[i:i+2])
+        buttons.append(InlineKeyboardButton(text=pad(text), callback_data=callback))
 
-    # Кнопка "Сбросить" тоже растягиваем
-    if include_reset:
-        reset_btn = InlineKeyboardButton(text=pad_text("🔄 Сбросить статистику"), callback_data="reset")
-        keyboard_rows.append([reset_btn])
+    rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
 
-    return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+    if include_back:
+        rows.append([InlineKeyboardButton(text="⬅️ Меню", callback_data="menu")])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 # --- СТАТИСТИКА ---
-def update_stats(user_id, is_correct):
-    if user_id not in user_stats:
-        user_stats[user_id] = {"correct": 0, "wrong": 0}
-    if is_correct:
-        user_stats[user_id]["correct"] += 1
+def update_stats(user_id, correct, word):
+    user_stats.setdefault(user_id, {"c": 0, "w": 0})
+    user_repeat.setdefault(user_id, [])
+
+    if correct:
+        user_stats[user_id]["c"] += 1
+        if word in user_repeat[user_id]:
+            user_repeat[user_id].remove(word)
     else:
-        user_stats[user_id]["wrong"] += 1
+        user_stats[user_id]["w"] += 1
+        user_repeat[user_id] += [word] * 3  # умный повтор
 
-def get_stats(user_id):
-    if user_id not in user_stats:
-        user_stats[user_id] = {"correct": 0, "wrong": 0}
-    return user_stats[user_id]["correct"], user_stats[user_id]["wrong"]
+def stats(user_id):
+    s = user_stats.get(user_id, {"c": 0, "w": 0})
+    return s["c"], s["w"]
 
-def reset_stats(user_id):
-    user_stats[user_id] = {"correct": 0, "wrong": 0}
+# --- ГЕНЕРАЦИЯ ---
+def generate_question(user_id, mode):
+    pool = data[mode].copy()
+
+    # добавляем ошибки
+    if user_repeat.get(user_id):
+        pool += user_repeat[user_id]
+
+    item = random.choice(pool)
+
+    if mode == "trainer":
+        correct = item["ru"]
+        choices = random.sample([w["ru"] for w in data["trainer"] if w["ru"] != correct], 3)
+        choices.append(correct)
+        random.shuffle(choices)
+        return item, choices, correct
+
+    else:
+        return item, item["options"], item["correct"]
 
 # --- СТАРТ ---
-@dp.message(Command(commands=["start", "restart"]))
-async def start(message: types.Message):
-    word, choices, correct = generate_question()
-    user_data[message.from_user.id] = correct
-    text = f"{word['he']} — {word['tr']}\nВыберите правильный перевод:"
-    await message.answer(text, reply_markup=build_keyboard(choices, include_reset=True))
+@dp.message(Command("start"))
+async def start(msg: types.Message):
+    await msg.answer("Выбери режим:", reply_markup=main_menu())
+
+# --- МЕНЮ ---
+@dp.callback_query(lambda c: c.data == "menu")
+async def menu(call: types.CallbackQuery):
+    await call.message.edit_text("Выбери режим:", reply_markup=main_menu())
+
+# --- ОБУЧЕНИЕ ---
+@dp.callback_query(lambda c: c.data == "learning")
+async def learning(call: types.CallbackQuery):
+    text = "\n".join(data["learning"])
+    await call.message.edit_text(text, reply_markup=main_menu())
+
+# --- ВЫБОР РЕЖИМА ---
+@dp.callback_query(lambda c: c.data.startswith("mode_"))
+async def set_mode(call: types.CallbackQuery):
+    mode = call.data.replace("mode_", "")
+    user_mode[call.from_user.id] = mode
+
+    word, choices, correct = generate_question(call.from_user.id, mode)
+    user_data[call.from_user.id] = correct
+
+    if mode == "trainer":
+        text = f"{word['he']} — {word['tr']}"
+    else:
+        text = word["question"]
+
+    await call.message.edit_text(text, reply_markup=build_keyboard(choices))
 
 # --- ОТВЕТ ---
 @dp.callback_query()
 async def answer(call: types.CallbackQuery):
     user_id = call.from_user.id
 
-    # --- Сброс статистики ---
-    if call.data == "reset":
-        reset_stats(user_id)
-        await call.message.edit_text("📊 Статистика обнулена!")
-        # задаем новый вопрос
-        word, choices, correct = generate_question()
-        user_data[user_id] = correct
-        await call.message.answer(
-            f"{word['he']} — {word['tr']}",
-            reply_markup=build_keyboard(choices, include_reset=True)
-        )
+    if call.data == "menu":
         return
 
-    # --- Проверка ответа ---
-    correct_answer = user_data.get(user_id)
-    if call.data == correct_answer:
-        update_stats(user_id, True)
-        result_text = f"✅ Верно! {call.message.text.splitlines()[0]} — {correct_answer}"
-    else:
-        update_stats(user_id, False)
-        # Показываем слово на иврите и правильный перевод
-        word_he_tr = next((w for w in words if w["ru"] == correct_answer), None)
-        if word_he_tr:
-            result_text = f"❌ Неверно! {word_he_tr['he']} — {correct_answer}"
+    mode = user_mode.get(user_id)
+    correct = user_data.get(user_id)
+
+    # найти слово
+    word_obj = None
+    for item in data[mode]:
+        if mode == "trainer":
+            if item["ru"] == correct:
+                word_obj = item
         else:
-            result_text = f"❌ Неверно! Правильный ответ: {correct_answer}"
+            if item["correct"] == correct:
+                word_obj = item
 
-    correct_count, wrong_count = get_stats(user_id)
-    await call.message.edit_text(
-        f"{result_text}\n\n📊 Статистика:\n✅ {correct_count} | ❌ {wrong_count}"
-    )
+    is_correct = call.data == correct
+    update_stats(user_id, is_correct, word_obj)
 
-    # --- Следующий вопрос ---
-    word, choices, correct = generate_question()
+    if mode == "trainer":
+        result = f"{word_obj['he']} — {word_obj['tr']} = {word_obj['ru']}"
+    else:
+        result = f"{word_obj['he']} — {word_obj['tr']} = {word_obj['question']}"
+
+    text = "✅ Верно!\n" if is_correct else "❌ Неверно!\n"
+    c, w = stats(user_id)
+
+    await call.message.edit_text(f"{text}{result}\n\n📊 {c} | {w}")
+
+    # следующий вопрос
+    word, choices, correct = generate_question(user_id, mode)
     user_data[user_id] = correct
-    await call.message.answer(
-        f"{word['he']} — {word['tr']}",
-        reply_markup=build_keyboard(choices, include_reset=True)
-    )
+
+    if mode == "trainer":
+        text = f"{word['he']} — {word['tr']}"
+    else:
+        text = word["question"]
+
+    await call.message.answer(text, reply_markup=build_keyboard(choices))
 
 # --- ЗАПУСК ---
 async def main():
