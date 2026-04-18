@@ -10,6 +10,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 TOKEN = os.getenv("TOKEN")
 words_file = "words.json"
 theory_file = "theory.json"
+revision_file = "revision.json" # Путь к файлу повторения
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -23,9 +24,8 @@ def load_json(filename):
 
 words_data = load_json(words_file)
 theory_data = load_json(theory_file)
+revision_data = load_json(revision_file) # Загружаем данные повторения
 
-# user_states теперь хранит список уже показанных слов
-# {user_id: {"mode": str, "current_item": dict, "learned": [список_ru_значений]}}
 user_states = {} 
 user_stats = {}
 
@@ -38,6 +38,7 @@ def get_main_menu():
         [InlineKeyboardButton(text="📜 Прошедшее время", callback_data="mode_past")],
         [InlineKeyboardButton(text="🎨 Прилагательные", callback_data="mode_adjectives")],
         [InlineKeyboardButton(text="🔗 Связующие слова", callback_data="mode_connectors")],
+        [InlineKeyboardButton(text="🔄 Повторение слов", callback_data="mode_revision")], # Новая кнопка
         [InlineKeyboardButton(text="📚 Теория", callback_data="theory_main")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats_main")]
     ]
@@ -55,13 +56,21 @@ async def send_question(message, user_id, mode, feedback=""):
         user_states[user_id] = {"mode": mode, "current_item": {}, "learned": []}
     
     state = user_states[user_id]
-    all_words = words_data[mode]
     
+    # ВЫБОР ИСТОЧНИКА СЛОВ
+    if mode == "revision":
+        all_words = revision_data.get("revision", [])
+    else:
+        all_words = words_data.get(mode, [])
+    
+    if not all_words:
+        await message.answer("Ошибка: список слов пуст или раздел не найден в JSON.")
+        return
+
     # Фильтруем слова, которые еще не были отвечены правильно
     available_words = [w for w in all_words if w["ru"] not in state["learned"]]
     
     if not available_words:
-        # Если все слова выучены
         text = f"{feedback}\n\n🎉 **Поздравляю!** Вы прошли все слова в этом режиме.\nНажмите «Сброс», чтобы начать заново."
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Сбросить и начать круг", callback_data="stats_reset")],
@@ -70,7 +79,6 @@ async def send_question(message, user_id, mode, feedback=""):
         await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
         return
 
-    # Выбираем случайное слово из доступных
     item = random.choice(available_words)
     state["current_item"] = item
     
@@ -116,7 +124,7 @@ async def theory_menu(call: types.CallbackQuery):
 async def show_theory_topic(call: types.CallbackQuery):
     topic = call.data.replace("th_", "")
     text = f"📘 **{topic.capitalize()}**\n\n{theory_data.get(topic, '...')}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[[[InlineKeyboardButton(text="🔙 Назад", callback_data="theory_main")]]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="theory_main")]])
     await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("mode_"))
@@ -137,12 +145,10 @@ async def handle_answer(call: types.CallbackQuery):
 
     if ans == correct_item["ru"]:
         user_stats[user_id]["correct"] += 1
-        # Добавляем в список выученных, чтобы больше не показывать в этом круге
         state["learned"].append(correct_item["ru"])
         feedback = "✅ **Верно!**"
     else:
         user_stats[user_id]["wrong"] += 1
-        # Слово НЕ добавляется в learned, значит оно выпадет снова когда-то потом
         tr = f"({correct_item['tr']})" if "tr" in correct_item else ""
         feedback = f"❌ **Ошибка!**\nВерно: `{correct_item['ru']}` {tr}"
 
@@ -163,7 +169,6 @@ async def reset_stats(call: types.CallbackQuery):
     if user_id in user_states:
         user_states[user_id]["learned"] = []
     await call.answer("Прогресс обнулен")
-    # После сброса возвращаемся в меню или запускаем режим заново
     await go_to_main(call)
 
 async def main():
