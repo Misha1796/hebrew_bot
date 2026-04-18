@@ -15,14 +15,34 @@ revision_file = "revision.json"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# --- ПЕРЕВОДЧИК НАЗВАНИЙ ТЕМ (Для твоих английских ключей) ---
+THEORY_TITLES = {
+    "alphabet": "🅰️ Алфавит",
+    "nekudot": "📍 Огласовки",
+    "article": "🆔 Артикль",
+    "gender": "👫 Род",
+    "plural": "🔢 Мн. число",
+    "et": "🎯 Частица ЭТ",
+    "binyanim": "🏗 Биньяны",
+    "past_ya": "🔙 Прошлое (Я)",
+    "future_ya": "🔜 Будущее (Я)",
+    "present": "🕒 Настоящее время",
+    "object": "👤 Меня/Его",
+    "prepositions": "📍 Предлоги",
+    "negation": "🚫 Отрицание",
+    "questions": "❓ Вопросы",
+    "yesh_ein": "💎 Есть/Нет",
+    "letter_h": "🌬 Буква hей",
+    "stress": "⚡ Ударение"
+}
+
 # --- ЗАГРУЗКА ДАННЫХ ---
 def load_json(filename):
     if os.path.exists(filename):
         with open(filename, "r", encoding="utf-8") as f:
             try:
                 return json.load(f)
-            except Exception as e:
-                print(f"Ошибка чтения {filename}: {e}")
+            except:
                 return {}
     return {}
 
@@ -53,55 +73,7 @@ def get_quiz_kb(choices):
     buttons.append([InlineKeyboardButton(text="🔙 В главное меню", callback_data="to_main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# --- ЛОГИКА ВОПРОСОВ ---
-
-async def send_question(message, user_id, mode, feedback=""):
-    if user_id not in user_states or user_states[user_id].get("mode") != mode:
-        user_states[user_id] = {"mode": mode, "current_item": {}, "learned": []}
-    
-    state = user_states[user_id]
-    
-    if mode == "revision":
-        all_words = revision_data.get("revision", [])
-    else:
-        all_words = words_data.get(mode, [])
-    
-    if not all_words:
-        await message.answer("⚠️ Список слов пуст.")
-        return
-
-    available_words = [w for w in all_words if w["ru"] not in state["learned"]]
-    
-    if not available_words:
-        text = f"{feedback}\n\n🎉 **Раздел пройден!**"
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Заново", callback_data="stats_reset")],
-            [InlineKeyboardButton(text="🏠 В меню", callback_data="to_main")]
-        ])
-        await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-        return
-
-    item = random.choice(available_words)
-    state["current_item"] = item
-    correct = item["ru"]
-    all_variants = [w["ru"] for w in all_words]
-    choices = list(set([correct] + random.sample(all_variants, min(len(all_variants), 4))))
-    random.shuffle(choices)
-    
-    stats = user_stats.get(user_id, {"correct": 0, "wrong": 0})
-    transcription = f" — *{item['tr']}*" if "tr" in item else ""
-    
-    text = f"{feedback}\n" if feedback else ""
-    text += f"📈 {stats['correct']} | Осталось: {len(available_words)}\n"
-    text += "────────────────────\n"
-    text += f"Как переводится?\n\n🇮🇱 **{item['he']}**{transcription}"
-    
-    try:
-        await message.edit_text(text, reply_markup=get_quiz_kb(choices), parse_mode="Markdown")
-    except:
-        await message.answer(text, reply_markup=get_quiz_kb(choices), parse_mode="Markdown")
-
-# --- ОБРАБОТЧИКИ ТЕОРИИ (ИСПРАВЛЕННЫЕ НАЗВАНИЯ) ---
+# --- ЛОГИКА ТЕОРИИ ---
 
 @dp.callback_query(F.data == "theory_main")
 async def theory_menu(call: types.CallbackQuery):
@@ -110,38 +82,60 @@ async def theory_menu(call: types.CallbackQuery):
         return
     
     buttons = []
-    # Берем ключи прямо из твоего файла
-    for index, key in enumerate(theory_data.keys()):
-        # Заменяем подчеркивание на пробел и делаем первую букву большой
-        # Это превратит "алфавит_и_письмо" в "Алфавит и письмо"
-        display_name = key.replace("_", " ").capitalize()
-        buttons.append([InlineKeyboardButton(text=display_name, callback_data=f"thidx_{index}")])
+    # Перебираем ключи из JSON (alphabet, gender и т.д.)
+    for key in theory_data.keys():
+        # Берем русское название из THEORY_TITLES, если нет — используем ключ
+        title = THEORY_TITLES.get(key, key.capitalize())
+        buttons.append([InlineKeyboardButton(text=title, callback_data=f"th_{key}")])
         
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="to_main")])
-    await call.message.edit_text("📚 **Выберите тему:**", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+    await call.message.edit_text("📚 **Выберите тему теории:**", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
-@dp.callback_query(F.data.startswith("thidx_"))
+@dp.callback_query(F.data.startswith("th_"))
 async def show_theory_content(call: types.CallbackQuery):
-    index = int(call.data.split("_")[1])
-    keys = list(theory_data.keys())
+    topic_key = call.data.replace("th_", "")
+    content = theory_data.get(topic_key, "Текст не найден.")
+    title = THEORY_TITLES.get(topic_key, topic_key.capitalize())
     
-    if index < len(keys):
-        key = keys[index]
-        content = theory_data[key]
-        display_name = key.replace("_", " ").capitalize()
-        
-        text = f"📘 **{display_name}**\n\n{content}"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 К темам", callback_data="theory_main")]])
-        
-        try:
-            await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-        except:
-            # Если в тексте есть символы, ломающие разметку, шлем без неё
-            await call.message.edit_text(text, reply_markup=kb, parse_mode=None)
+    text = f"📘 **{title}**\n\n{content}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 К списку", callback_data="theory_main")]])
     
+    try:
+        await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except:
+        await call.message.edit_text(text, reply_markup=kb, parse_mode=None)
     await call.answer()
 
-# --- ОБЩИЕ ОБРАБОТЧИКИ ---
+# --- ЛОГИКА ОБУЧЕНИЯ (Остается без изменений) ---
+
+async def send_question(message, user_id, mode, feedback=""):
+    if user_id not in user_states or user_states[user_id].get("mode") != mode:
+        user_states[user_id] = {"mode": mode, "current_item": {}, "learned": []}
+    state = user_states[user_id]
+    source = revision_data.get("revision", []) if mode == "revision" else words_data.get(mode, [])
+    
+    available_words = [w for w in source if w["ru"] not in state["learned"]]
+    if not available_words:
+        text = f"{feedback}\n\n🎉 **Раздел пройден!**"
+        await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Заново", callback_data="stats_reset")],
+            [InlineKeyboardButton(text="🏠 В меню", callback_data="to_main")]
+        ]), parse_mode="Markdown")
+        return
+
+    item = random.choice(available_words)
+    state["current_item"] = item
+    choices = list(set([item["ru"]] + random.sample([w["ru"] for w in source], min(len(source), 4))))
+    random.shuffle(choices)
+    
+    stats = user_stats.get(user_id, {"correct": 0, "wrong": 0})
+    tr = f" — *{item['tr']}*" if "tr" in item else ""
+    text = f"{feedback}\n📈 {stats['correct']} | Осталось: {len(available_words)}\n────────────────────\nКак переводится?\n\n🇮🇱 **{item['he']}**{tr}"
+    
+    try:
+        await message.edit_text(text, reply_markup=get_quiz_kb(choices), parse_mode="Markdown")
+    except:
+        await message.answer(text, reply_markup=get_quiz_kb(choices), parse_mode="Markdown")
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -159,20 +153,20 @@ async def select_mode(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("ans_"))
 async def handle_answer(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    ans = call.data.replace("ans_", "")
+    user_id, ans = call.from_user.id, call.data.replace("ans_", "")
     state = user_states.get(user_id)
     if not state: return
-    correct_item = state["current_item"]
     if user_id not in user_stats: user_stats[user_id] = {"correct": 0, "wrong": 0}
+    
+    correct_item = state["current_item"]
     if ans == correct_item["ru"]:
         user_stats[user_id]["correct"] += 1
         state["learned"].append(correct_item["ru"])
         feedback = "✅ **Верно!**"
     else:
         user_stats[user_id]["wrong"] += 1
-        tr = f"({correct_item['tr']})" if "tr" in correct_item else ""
-        feedback = f"❌ **Ошибка!**\nВерно: `{correct_item['ru']}` {tr}"
+        feedback = f"❌ **Ошибка!**\nВерно: `{correct_item['ru']}`"
+    
     await send_question(call.message, user_id, state["mode"], feedback=feedback)
     await call.answer()
 
@@ -188,7 +182,7 @@ async def reset_stats(call: types.CallbackQuery):
     user_id = call.from_user.id
     user_stats[user_id] = {"correct": 0, "wrong": 0}
     if user_id in user_states: user_states[user_id]["learned"] = []
-    await call.answer("Прогресс обнулен")
+    await call.answer("Сброшено")
     await go_to_main(call)
 
 async def main():
