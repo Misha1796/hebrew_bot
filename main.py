@@ -10,21 +10,47 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 TOKEN = os.getenv("TOKEN")
 words_file = "words.json"
 theory_file = "theory.json"
-revision_file = "revision.json" # Путь к файлу повторения
+revision_file = "revision.json"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+# --- СЛОВАРЬ ДЛЯ КРАСИВЫХ КНОПОК ТЕОРИИ ---
+# Ключ должен строго совпадать с ключом в твоем theory.json
+THEORY_TITLES = {
+    "алфавит_и_письмо": "🅰️ Алфавит",
+    "огласовки_некудот": "📍 Огласовки",
+    "артикль_hа": "🆔 Артикль",
+    "род_существительных": "👫 Род",
+    "множественное_число": "🔢 Мн. число",
+    "предлог_эт": "🎯 Частица ЭТ",
+    "биньяны_глаголов": "🏗 Биньяны",
+    "прошедшее_время_я": "🔙 Прошлое (Я)",
+    "будущее_время_я": "🔜 Будущее (Я)",
+    "настоящее_время": "🕒 Настоящее время",
+    "местоимения_объект": "👤 Меня/Его",
+    "предлоги_места": "📍 Предлоги",
+    "отрицание": "🚫 Отрицание",
+    "вопросы": "❓ Вопросы",
+    "состояние_еш_эйн": "💎 Есть/Нет",
+    "буква_h_правило": "🌬 Буква hей",
+    "ударение": "⚡ Ударение"
+}
 
 # --- ЗАГРУЗКА ДАННЫХ ---
 def load_json(filename):
     if os.path.exists(filename):
         with open(filename, "r", encoding="utf-8") as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except:
+                print(f"Ошибка чтения файла {filename}")
+                return {}
     return {}
 
 words_data = load_json(words_file)
 theory_data = load_json(theory_file)
-revision_data = load_json(revision_file) # Загружаем данные повторения
+revision_data = load_json(revision_file)
 
 user_states = {} 
 user_stats = {}
@@ -38,7 +64,7 @@ def get_main_menu():
         [InlineKeyboardButton(text="📜 Прошедшее время", callback_data="mode_past")],
         [InlineKeyboardButton(text="🎨 Прилагательные", callback_data="mode_adjectives")],
         [InlineKeyboardButton(text="🔗 Связующие слова", callback_data="mode_connectors")],
-        [InlineKeyboardButton(text="🔄 Повторение слов", callback_data="mode_revision")], # Новая кнопка
+        [InlineKeyboardButton(text="🔄 Повторение слов", callback_data="mode_revision")],
         [InlineKeyboardButton(text="📚 Теория", callback_data="theory_main")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats_main")]
     ]
@@ -57,23 +83,22 @@ async def send_question(message, user_id, mode, feedback=""):
     
     state = user_states[user_id]
     
-    # ВЫБОР ИСТОЧНИКА СЛОВ
+    # Выбор источника слов
     if mode == "revision":
         all_words = revision_data.get("revision", [])
     else:
         all_words = words_data.get(mode, [])
     
     if not all_words:
-        await message.answer("Ошибка: список слов пуст или раздел не найден в JSON.")
+        await message.answer("⚠️ В этом разделе пока нет слов.")
         return
 
-    # Фильтруем слова, которые еще не были отвечены правильно
     available_words = [w for w in all_words if w["ru"] not in state["learned"]]
     
     if not available_words:
-        text = f"{feedback}\n\n🎉 **Поздравляю!** Вы прошли все слова в этом режиме.\nНажмите «Сброс», чтобы начать заново."
+        text = f"{feedback}\n\n🎉 **Круг пройден!**\nВсе слова из этого раздела изучены."
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Сбросить и начать круг", callback_data="stats_reset")],
+            [InlineKeyboardButton(text="🔄 Повторить заново", callback_data="stats_reset")],
             [InlineKeyboardButton(text="🏠 В меню", callback_data="to_main")]
         ])
         await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -105,28 +130,52 @@ async def send_question(message, user_id, mode, feedback=""):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("🇮🇱 **Шалом!** Выбери раздел:", reply_markup=get_main_menu(), parse_mode="Markdown")
+    await message.answer("🇮🇱 **Шалом!** Выбери режим обучения:", reply_markup=get_main_menu(), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "to_main")
 async def go_to_main(call: types.CallbackQuery):
     await call.message.edit_text("🏠 **Главное меню**", reply_markup=get_main_menu(), parse_mode="Markdown")
 
+# --- ТЕОРИЯ ---
 @dp.callback_query(F.data == "theory_main")
 async def theory_menu(call: types.CallbackQuery):
     if not theory_data:
-        await call.answer("Файл теории пуст или не найден")
+        await call.answer("Файл теории пуст", show_alert=True)
         return
-    buttons = [[InlineKeyboardButton(text=t.capitalize(), callback_data=f"th_{t}")] for t in theory_data.keys()]
+    
+    buttons = []
+    # Формируем список кнопок на основе ключей из JSON
+    for index, key in enumerate(theory_data.keys()):
+        # Берем красивое название из словаря или само название ключа
+        title = THEORY_TITLES.get(key, key.replace("_", " ").capitalize())
+        # Чтобы callback_data не была слишком длинной, передаем индекс
+        buttons.append([InlineKeyboardButton(text=title, callback_data=f"thidx_{index}")])
+        
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="to_main")])
     await call.message.edit_text("📚 **Выберите тему:**", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
-@dp.callback_query(F.data.startswith("th_"))
-async def show_theory_topic(call: types.CallbackQuery):
-    topic = call.data.replace("th_", "")
-    text = f"📘 **{topic.capitalize()}**\n\n{theory_data.get(topic, '...')}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="theory_main")]])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+@dp.callback_query(F.data.startswith("thidx_"))
+async def show_theory_content(call: types.CallbackQuery):
+    index = int(call.data.split("_")[1])
+    keys = list(theory_data.keys())
+    
+    if index < len(keys):
+        key = keys[index]
+        content = theory_data[key]
+        title = THEORY_TITLES.get(key, key.replace("_", " ").capitalize())
+        
+        text = f"📘 **{title}**\n\n{content}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 К темам", callback_data="theory_main")]])
+        
+        try:
+            await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        except:
+            # Если Markdown сломался из-за символов, шлем простым текстом
+            await call.message.edit_text(text, reply_markup=kb, parse_mode=None)
+    
+    await call.answer()
 
+# --- ТРЕНИРОВКА ---
 @dp.callback_query(F.data.startswith("mode_"))
 async def select_mode(call: types.CallbackQuery):
     mode = call.data.split("_")[1]
@@ -150,7 +199,7 @@ async def handle_answer(call: types.CallbackQuery):
     else:
         user_stats[user_id]["wrong"] += 1
         tr = f"({correct_item['tr']})" if "tr" in correct_item else ""
-        feedback = f"❌ **Ошибка!**\nВерно: `{correct_item['ru']}` {tr}"
+        feedback = f"❌ **Ошибка!**\nПравильно: `{correct_item['ru']}` {tr}"
 
     await send_question(call.message, user_id, state["mode"], feedback=feedback)
     await call.answer()
@@ -168,7 +217,7 @@ async def reset_stats(call: types.CallbackQuery):
     user_stats[user_id] = {"correct": 0, "wrong": 0}
     if user_id in user_states:
         user_states[user_id]["learned"] = []
-    await call.answer("Прогресс обнулен")
+    await call.answer("Прогресс сброшен")
     await go_to_main(call)
 
 async def main():
