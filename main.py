@@ -194,31 +194,32 @@ async def start_ai_chat(call: types.CallbackQuery, state: FSMContext):
 @dp.message(BotStates.ai_chat, F.voice)
 async def handle_ai_voice(message: types.Message):
     file_id = message.voice.file_id
-    # Оставляем расширение .ogg, так как Telegram присылает именно его
     input_p = f"{file_id}.ogg"
     output_p = f"res_{file_id}.mp3"
     
-    # Скачиваем файл
-    file = await bot.get_file(file_id)
-    await bot.download_file(file.file_path, input_p)
+    # 1. Скачиваем файл из Telegram
+    try:
+        file = await bot.get_file(file_id)
+        await bot.download_file(file.file_path, input_p)
+    except Exception as e:
+        await message.answer("❌ Не удалось скачать голосовое сообщение.")
+        return
     
     try:
-        # 1. Распознавание (Whisper)
-        # Важно: передаем кортеж (имя_файла, бинарные_данные)
-        with open(input_p, "rb") as f:
-            audio_data = f.read()
-            
-        transcription = await client.audio.transcriptions.create(
-            model=AUDIO_MODEL,
-            file=(input_p, audio_data), # Передаем имя файла для корректного определения формата
-            response_format="text"
-        )
+        # 2. Распознавание (Whisper на Groq)
+        # Мы открываем файл и передаем его с явным указанием типа audio/ogg
+        with open(input_p, "rb") as audio_file:
+            transcription = await client.audio.transcriptions.create(
+                model=AUDIO_MODEL,
+                file=(input_p, audio_file.read(), 'audio/ogg'), # Явно задаем MIME-тип
+                response_format="text"
+            )
         
-        if not transcription.strip():
-            await message.answer("🤖 Я не разобрал слова в голосовом сообщении.")
+        if not transcription or len(transcription.strip()) < 2:
+            await message.answer("🤖 Я получил пустой аудиофайл. Попробуй сказать что-то еще раз.")
             return
 
-        # 2. Ответ от Llama
+        # 3. Ответ от Llama
         response = await client.chat.completions.create(
             model=TEXT_MODEL,
             messages=[
@@ -229,21 +230,24 @@ async def handle_ai_voice(message: types.Message):
         
         reply_text = response.choices[0].message.content
 
-        # 3. Озвучка (Edge-TTS)
+        # 4. Озвучка ответа (Edge-TTS)
         comm = edge_tts.Communicate(reply_text, "he-IL-AvriNeural")
         await comm.save(output_p)
         
         await message.answer_voice(
             voice=FSInputFile(output_p),
-            caption=f"📝 {reply_text[:100]}..." # Добавим текст ответа в описание
+            caption=f"📝 {reply_text[:100]}..."
         )
 
     except Exception as e:
-        # Выводим полную ошибку для диагностики
         print(f"Ошибка Voice: {e}")
-        await message.answer(f"⚠️ Ошибка голосового чата: {str(e)[:100]}")
+        # Если ошибка содержит "No audio", значит Groq всё равно не понял формат
+        if "No audio" in str(e):
+            await message.answer("⚠️ Groq не смог прочитать аудио. Возможно, сообщение слишком короткое.")
+        else:
+            await message.answer(f"⚠️ Ошибка: {str(e)[:100]}")
     finally:
-        # Чистим за собой
+        # Удаляем временные файлы
         for p in [input_p, output_p]:
             if os.path.exists(p):
                 try: os.remove(p)
