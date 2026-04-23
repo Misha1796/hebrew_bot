@@ -1,42 +1,32 @@
-import asyncio
-import random
 import os
-import json
 import google.generativeai as genai
-import edge_tts
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
-from aiogram.fsm.state import StatesGroup, State
-from aiogram.fsm.context import FSMContext
 
-# --- ФИКС ОШИБКИ 404 ---
-# Принудительно устанавливаем стабильную версию API v1
+# 1. ЖЕСТКО ЗАДАЕМ ВЕРСИЮ API (это лечит 404)
 os.environ["GOOGLE_GENERATIVE_AI_API_VERSION"] = "v1"
 
 TOKEN = os.getenv("TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_KEY")
 
-# Настройка Gemini
 genai.configure(api_key=GEMINI_KEY)
-# Используем прямое имя модели без префиксов
-model = genai.GenerativeModel("gemini-1.5-flash")
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+# 2. УМНАЯ ИНИЦИАЛИЗАЦИЯ
+# Мы пробуем разные названия, пока одно из них не сработает
+model_names = ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-pro"]
+model = None
 
-# Состояния для переключения режимов
-class BotStates(StatesGroup):
-    translator = State()
-    ai_chat = State()
+for name in model_names:
+    try:
+        test_model = genai.GenerativeModel(name)
+        # Пробный микро-запрос для проверки связи
+        test_model.generate_content("test", generation_config={"max_output_tokens": 1})
+        model = test_model
+        print(f"✅ Успешно подключена модель: {name}")
+        break
+    except Exception as e:
+        print(f"❌ Модель {name} не подошла: {e}")
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-def load_json(filename):
-    if os.path.exists(filename):
-        with open(filename, "r", encoding="utf-8") as f:
-            try: return json.load(f)
-            except: return {}
-    return {}
+if model is None:
+    print("🚨 КРИТИЧЕСКАЯ ОШИБКА: Ни одна модель не доступна. Проверь API ключ!")
 
 words_data = load_json("words.json")
 theory_data = load_json("theory.json")
