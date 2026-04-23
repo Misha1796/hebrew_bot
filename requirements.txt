@@ -1,4 +1,4 @@
 aiogram
-google-genai
+openai
 edge-tts
 pydantic==2.5.3
