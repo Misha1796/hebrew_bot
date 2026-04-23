@@ -1,5 +1,5 @@
 aiogram
 pydantic==2.5.3
-google-generativeai
+google-genai
 gTTS
 edge-tts
