@@ -3,3 +3,4 @@ pydantic==2.5.3
 google-generativeai>=0.5.0
 gTTS
 edge-tts
+openai
