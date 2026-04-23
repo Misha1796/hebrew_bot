@@ -2,11 +2,10 @@ import asyncio
 import random
 import os
 import json
-import edge_tts
 from openai import AsyncOpenAI
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 
@@ -21,16 +20,14 @@ client = AsyncOpenAI(
 )
 
 TEXT_MODEL = "llama-3.3-70b-versatile"
-AUDIO_MODEL = "whisper-large-v3"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 class BotStates(StatesGroup):
     translator = State()
-    ai_chat = State()
 
-# --- ПЕРЕВОДЧИК ТЕМ ---
+# --- ТЕОРИЯ И КАТЕГОРИИ ---
 THEORY_TITLES = {
     "alphabet": "🅰️ Алфавит", "nekudot": "📍 Огласовки", "article": "🆔 Артикль",
     "gender": "👫 Род", "plural": "🔢 Мн. число", "et": "🎯 Частица ЭТ",
@@ -38,6 +35,17 @@ THEORY_TITLES = {
     "present": "🕒 Настоящее время", "object": "👤 Меня/Его", "prepositions": "📍 Предлоги",
     "negation": "🚫 Отрицание", "questions": "❓ Вопросы", "yesh_ein": "💎 Есть/Нет",
     "letter_h": "🌬 Буква hей", "stress": "⚡ Ударение"
+}
+
+CAT_NAMES = {
+    "all": "🎯 Общий тренажёр",
+    "verbs": "🎬 Глаголы", 
+    "phrases": "💬 Фразы", 
+    "nouns": "🏠 Существительные",
+    "adjectives": "🎨 Прилагательные", 
+    "connectors": "🔗 Связки",
+    "past": "🔙 Прошлое", 
+    "future": "🔜 Будущее"
 }
 
 # --- ЗАГРУЗКА ДАННЫХ ---
@@ -63,27 +71,25 @@ def get_main_menu():
         [InlineKeyboardButton(text="🔄 Повторение", callback_data="mode_revision")],
         [InlineKeyboardButton(text="📚 Теория", callback_data="theory_main")],
         [InlineKeyboardButton(text="🇮🇱 Переводчик (AI)", callback_data="go_translator")],
-        [InlineKeyboardButton(text="🎙 Голосовой AI", callback_data="go_ai_chat")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats_main")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_trainer_categories():
-    buttons = []
-    # Категории на основе ключей в words.json
+    buttons = [[InlineKeyboardButton(text=CAT_NAMES["all"], callback_data="mode_all")]]
+    
     for key in words_data.keys():
-        name = key.capitalize()
-        if key == "past": name = "🔙 Прошлое"
-        elif key == "future": name = "🔜 Будущее"
-        elif key == "adjectives": name = "🎨 Прилагательные"
-        elif key == "connectors": name = "🔗 Связки"
+        if key == "all": continue
+        name = CAT_NAMES.get(key, key.capitalize())
         buttons.append([InlineKeyboardButton(text=name, callback_data=f"mode_{key}")])
-    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="to_main")])
+    
+    buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="to_main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_quiz_kb(choices):
     buttons = [[InlineKeyboardButton(text=c, callback_data=f"ans_{i}")] for i, c in enumerate(choices)]
-    buttons.append([InlineKeyboardButton(text="🔙 Меню", callback_data="to_main")])
+    buttons.append([InlineKeyboardButton(text="🔙 К категориям", callback_data="trainer_menu")])
+    buttons.append([InlineKeyboardButton(text="🏠 Меню", callback_data="to_main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # --- ЛОГИКА ТРЕНАЖЕРА ---
@@ -93,25 +99,37 @@ async def send_question(message, user_id, mode, feedback=""):
         user_states[user_id] = {"mode": mode, "current_item": {}, "learned": [], "current_choices": []}
     
     st = user_states[user_id]
-    source = revision_data.get("revision", []) if mode == "revision" else words_data.get(mode, [])
+    
+    # Логика выбора источника слов
+    if mode == "revision":
+        source = revision_data.get("revision", [])
+    elif mode == "all":
+        source = []
+        for cat_list in words_data.values():
+            source.extend(cat_list)
+    else:
+        source = words_data.get(mode, [])
     
     if not source:
         await message.answer("⚠️ Список слов пуст.")
         return
 
     available = [w for w in source if w["ru"] not in st["learned"]]
+    
     if not available:
         text = f"{feedback}\n\n🎉 **Раздел пройден!**"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Заново", callback_data="stats_reset")],
-            [InlineKeyboardButton(text="🏠 В меню", callback_data="to_main")]
+            [InlineKeyboardButton(text="📖 К категориям", callback_data="trainer_menu")]
         ])
         await message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
         return
 
     item = random.choice(available)
     st["current_item"] = item
-    all_ru = [w["ru"] for w in source]
+    
+    # Генерация случайных вариантов
+    all_ru = list(set(w["ru"] for w in source))
     choices = list(set([item["ru"]] + random.sample(all_ru, min(len(all_ru), 4))))
     random.shuffle(choices)
     st["current_choices"] = choices
@@ -130,7 +148,7 @@ async def send_question(message, user_id, mode, feedback=""):
 
 @dp.callback_query(F.data == "trainer_menu")
 async def show_trainer_menu(call: types.CallbackQuery):
-    await call.message.edit_text("📖 **Выберите категорию:**", reply_markup=get_trainer_categories(), parse_mode="Markdown")
+    await call.message.edit_text("📖 **Выберите категорию тренажёра:**", reply_markup=get_trainer_categories(), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "theory_main")
 async def theory_menu(call: types.CallbackQuery):
@@ -162,12 +180,12 @@ async def reset_stats(call: types.CallbackQuery):
     await call.answer("Прогресс обнулен")
     await go_to_main(call)
 
-# --- ИИ ЛОГИКА (GROQ) ---
+# --- ИИ ПЕРЕВОДЧИК ---
 
 @dp.callback_query(F.data == "go_translator")
 async def start_translator(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(BotStates.translator)
-    await call.message.edit_text("✍️ **Переводчик (Llama 3.3)**\nНапиши фразу для перевода:", 
+    await call.message.edit_text("✍️ **Переводчик (Llama 3.3)**\nНапиши фразу на русском, я переведу её на иврит с транскрипцией.", 
                                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="to_main")]]), 
                                parse_mode="Markdown")
 
@@ -177,81 +195,13 @@ async def handle_translation(message: types.Message):
     try:
         res = await client.chat.completions.create(
             model=TEXT_MODEL,
-            messages=[{"role": "system", "content": "Ты учитель иврита. Переводи, давай транскрипцию и род."},
+            messages=[{"role": "system", "content": "Ты учитель иврита. Переводи кратко, давай транскрипцию и указывай род."},
                       {"role": "user", "content": message.text}]
         )
         await message.answer(res.choices[0].message.content, parse_mode="Markdown")
-    except Exception as e:
-        await message.answer("⚠️ Ошибка AI. Проверь API ключ Groq.")
+    except Exception:
+        await message.answer("⚠️ Ошибка AI. Попробуй позже.")
 
-@dp.callback_query(F.data == "go_ai_chat")
-async def start_ai_chat(call: types.CallbackQuery, state: FSMContext):
-    await state.set_state(BotStates.ai_chat)
-    await call.message.edit_text("🎙 **Голосовой AI**\nПришли голосовое сообщение!", 
-                               reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="to_main")]]), 
-                               parse_mode="Markdown")
-
-@dp.message(BotStates.ai_chat, F.voice)
-async def handle_ai_voice(message: types.Message):
-    file_id = message.voice.file_id
-    input_p = f"{file_id}.ogg"
-    output_p = f"res_{file_id}.mp3"
-    
-    # 1. Скачиваем файл из Telegram
-    try:
-        file = await bot.get_file(file_id)
-        await bot.download_file(file.file_path, input_p)
-    except Exception as e:
-        await message.answer("❌ Не удалось скачать голосовое сообщение.")
-        return
-    
-    try:
-        # 2. Распознавание (Whisper на Groq)
-        # Мы открываем файл и передаем его с явным указанием типа audio/ogg
-        with open(input_p, "rb") as audio_file:
-            transcription = await client.audio.transcriptions.create(
-                model=AUDIO_MODEL,
-                file=(input_p, audio_file.read(), 'audio/ogg'), # Явно задаем MIME-тип
-                response_format="text"
-            )
-        
-        if not transcription or len(transcription.strip()) < 2:
-            await message.answer("🤖 Я получил пустой аудиофайл. Попробуй сказать что-то еще раз.")
-            return
-
-        # 3. Ответ от Llama
-        response = await client.chat.completions.create(
-            model=TEXT_MODEL,
-            messages=[
-                {"role": "system", "content": "Ты эксперт по ивриту. Отвечай кратко на языке пользователя."},
-                {"role": "user", "content": transcription}
-            ]
-        )
-        
-        reply_text = response.choices[0].message.content
-
-        # 4. Озвучка ответа (Edge-TTS)
-        comm = edge_tts.Communicate(reply_text, "he-IL-AvriNeural")
-        await comm.save(output_p)
-        
-        await message.answer_voice(
-            voice=FSInputFile(output_p),
-            caption=f"📝 {reply_text[:100]}..."
-        )
-
-    except Exception as e:
-        print(f"Ошибка Voice: {e}")
-        # Если ошибка содержит "No audio", значит Groq всё равно не понял формат
-        if "No audio" in str(e):
-            await message.answer("⚠️ Groq не смог прочитать аудио. Возможно, сообщение слишком короткое.")
-        else:
-            await message.answer(f"⚠️ Ошибка: {str(e)[:100]}")
-    finally:
-        # Удаляем временные файлы
-        for p in [input_p, output_p]:
-            if os.path.exists(p):
-                try: os.remove(p)
-                except: pass
 # --- СИСТЕМНЫЕ ОБРАБОТЧИКИ ---
 
 @dp.callback_query(F.data.startswith("ans_"))
@@ -283,7 +233,7 @@ async def select_mode(call: types.CallbackQuery):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("🇮🇱 **Шалом!** Выбери режим обучения:", reply_markup=get_main_menu(), parse_mode="Markdown")
+    await message.answer("🇮🇱 **Шалом!** Я твой личный учитель иврита.\nВыбери нужный раздел:", reply_markup=get_main_menu(), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "to_main")
 async def go_to_main(call: types.CallbackQuery, state: FSMContext = None):
