@@ -1,5 +1,3 @@
 aiogram
-pydantic==2.5.3
 google-genai
-gTTS
 edge-tts
