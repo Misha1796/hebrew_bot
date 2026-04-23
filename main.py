@@ -194,26 +194,60 @@ async def start_ai_chat(call: types.CallbackQuery, state: FSMContext):
 @dp.message(BotStates.ai_chat, F.voice)
 async def handle_ai_voice(message: types.Message):
     file_id = message.voice.file_id
-    input_p, output_p = f"{file_id}.ogg", f"res_{file_id}.mp3"
-    await bot.download_file((await bot.get_file(file_id)).file_path, input_p)
+    # Оставляем расширение .ogg, так как Telegram присылает именно его
+    input_p = f"{file_id}.ogg"
+    output_p = f"res_{file_id}.mp3"
+    
+    # Скачиваем файл
+    file = await bot.get_file(file_id)
+    await bot.download_file(file.file_path, input_p)
+    
     try:
+        # 1. Распознавание (Whisper)
+        # Важно: передаем кортеж (имя_файла, бинарные_данные)
         with open(input_p, "rb") as f:
-            trans = await client.audio.transcriptions.create(model=AUDIO_MODEL, file=f)
-        
-        res = await client.chat.completions.create(
-            model=TEXT_MODEL,
-            messages=[{"role": "user", "content": trans.text}]
+            audio_data = f.read()
+            
+        transcription = await client.audio.transcriptions.create(
+            model=AUDIO_MODEL,
+            file=(input_p, audio_data), # Передаем имя файла для корректного определения формата
+            response_format="text"
         )
         
-        tts = edge_tts.Communicate(res.choices[0].message.content, "he-IL-AvriNeural")
-        await tts.save(output_p)
-        await message.answer_voice(voice=FSInputFile(output_p))
-    except:
-        await message.answer("❌ Ошибка голосового чата.")
-    finally:
-        for p in [input_p, output_p]:
-            if os.path.exists(p): os.remove(p)
+        if not transcription.strip():
+            await message.answer("🤖 Я не разобрал слова в голосовом сообщении.")
+            return
 
+        # 2. Ответ от Llama
+        response = await client.chat.completions.create(
+            model=TEXT_MODEL,
+            messages=[
+                {"role": "system", "content": "Ты эксперт по ивриту. Отвечай кратко на языке пользователя."},
+                {"role": "user", "content": transcription}
+            ]
+        )
+        
+        reply_text = response.choices[0].message.content
+
+        # 3. Озвучка (Edge-TTS)
+        comm = edge_tts.Communicate(reply_text, "he-IL-AvriNeural")
+        await comm.save(output_p)
+        
+        await message.answer_voice(
+            voice=FSInputFile(output_p),
+            caption=f"📝 {reply_text[:100]}..." # Добавим текст ответа в описание
+        )
+
+    except Exception as e:
+        # Выводим полную ошибку для диагностики
+        print(f"Ошибка Voice: {e}")
+        await message.answer(f"⚠️ Ошибка голосового чата: {str(e)[:100]}")
+    finally:
+        # Чистим за собой
+        for p in [input_p, output_p]:
+            if os.path.exists(p):
+                try: os.remove(p)
+                except: pass
 # --- СИСТЕМНЫЕ ОБРАБОТЧИКИ ---
 
 @dp.callback_query(F.data.startswith("ans_"))
