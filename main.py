@@ -88,7 +88,8 @@ async def handle_translation(message: types.Message):
         response = model.generate_content(prompt)
         await message.answer(response.text, parse_mode="Markdown")
     except Exception as e:
-        await message.answer("Ошибка связи с Gemini. Проверь API ключ.")
+        # Теперь бот пришлет саму ошибку, а не просто текст про ключ
+        await message.answer(f"⚠️ Ошибка ИИ: {str(e)}")
 
 @dp.callback_query(F.data == "go_ai_chat")
 async def start_ai_chat(call: types.CallbackQuery, state: FSMContext):
