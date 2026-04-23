@@ -88,7 +88,7 @@ async def handle_ai_voice(message: types.Message):
     await bot.download_file(file.file_path, input_path)
     
     # Отправляем в Gemini
-    raw_audio = genai.upload_file(path=input_path)
+    raw_audio = genai.upload_file(path=input_path, mime_type="audio/ogg")
     response = model.generate_content([raw_audio, "Ответь кратко на иврите или русском, в зависимости от вопроса."])
     
     # Озвучиваем ответ (используем голос иврита или русский)
