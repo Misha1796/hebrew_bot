@@ -10,29 +10,28 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, FSInputFil
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 
-# --- ПРИНУДИТЕЛЬНЫЙ ФИКС API ---
+# --- ЖЕСТКИЙ ФИКС API ---
 os.environ["GOOGLE_GENERATIVE_AI_API_VERSION"] = "v1"
 
-# --- НАСТРОЙКИ ---
-TOKEN = os.getenv("TOKEN")
-GEMINI_KEY = os.getenv("GEMINI_KEY")
+genai.configure(api_key=GEMINI_KEY, transport="rest") # Используем REST вместо gRPC для стабильности
 
-# --- УМНАЯ НАСТРОЙКА ИИ (ФИКС 404) ---
-genai.configure(api_key=GEMINI_KEY)
-
-def get_working_model():
-    # Пробуем разные модели. gemini-pro самая стабильная для v1
-    for name in ["gemini-pro", "gemini-1.5-flash", "gemini-1.0-pro"]:
+def get_ultra_stable_model():
+    # Мы пробуем только стабильные имена
+    for name in ["gemini-1.5-flash", "gemini-pro"]:
         try:
-            m = genai.GenerativeModel(name)
-            # Тестовый запрос
+            # Явно указываем версию API при создании модели через параметр
+            m = genai.GenerativeModel(
+                model_name=f"models/{name}"
+            )
+            # Тестовый мирок-запрос
             m.generate_content("Hi", generation_config={"max_output_tokens": 1})
+            print(f"✅ Успешно: {name}")
             return m
-        except:
-            continue
-    return genai.GenerativeModel("gemini-pro") # Дефолт
+        except Exception as e:
+            print(f"❌ {name} мимо: {e}")
+    return None
 
-model = get_working_model()
+model = get_ultra_stable_model()
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
